@@ -1,0 +1,42 @@
+{
+  "agents": [
+    "soft",
+    "tough",
+    "aspiration",
+    "walk",
+    "balanced"
+  ],
+  "original_agents": [
+    "soft",
+    "tough",
+    "aspiration",
+    "walk",
+    "balanced"
+  ],
+  "params": {
+    "q": [
+      7,
+      4,
+      1
+    ],
+    "v_max": 100,
+    "gamma": 0.98,
+    "max_rounds": 5,
+    "games_per_pair": 20
+  },
+  "pyspiel": {
+    "enabled": true,
+    "loaded": false,
+    "negotiation_params": {
+      "enable_proposals": true,
+      "enable_utterances": false,
+      "num_items": 3,
+      "discount": 0.98,
+      "min_value": 1,
+      "max_value": 100,
+      "max_rounds": 5,
+      "max_quantity": 10,
+      "item_quantities": "7,4,1"
+    }
+  }
+}

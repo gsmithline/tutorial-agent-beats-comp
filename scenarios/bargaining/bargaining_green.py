@@ -11,19 +11,52 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from agentbeats.green_executor import GreenAgent, GreenExecutor
-from agentbeats.models import EvalRequest, EvalResult
-from a2a.types import TaskState, Part, TextPart
-from a2a.server.tasks import TaskUpdater
-from a2a.utils import new_agent_text_message
-from a2a.server.apps import A2AStarletteApplication
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.tasks import InMemoryTaskStore
-import uvicorn
 import contextlib
 
-from bargaining_env.run_entire_matrix import run_matrix_pipeline
-from bargaining_env.main import run_analysis
+# Optional server dependencies; provide fallbacks for CLI 'once' mode
+HAVE_A2A = True
+try:
+    from agentbeats.green_executor import GreenAgent, GreenExecutor  # type: ignore
+    from agentbeats.models import EvalRequest, EvalResult  # type: ignore
+    from a2a.types import TaskState, Part, TextPart  # type: ignore
+    from a2a.server.tasks import TaskUpdater  # type: ignore
+    from a2a.utils import new_agent_text_message  # type: ignore
+    from a2a.server.apps import A2AStarletteApplication  # type: ignore
+    from a2a.server.request_handlers import DefaultRequestHandler  # type: ignore
+    from a2a.server.tasks import InMemoryTaskStore  # type: ignore
+    import uvicorn  # type: ignore
+except Exception:
+    HAVE_A2A = False
+
+    class GreenAgent:  # type: ignore
+        pass
+
+    class EvalRequest:  # type: ignore
+        def __init__(self, participants: Dict[str, Any], config: Optional[Dict[str, Any]] = None):
+            self.participants = participants
+            self.config = config or {}
+
+    class EvalResult:  # type: ignore
+        def __init__(self, winner: str, detail: Dict[str, Any]):
+            self.winner = winner
+            self.detail = detail
+
+        def model_dump(self) -> Dict[str, Any]:
+            return {"winner": self.winner, "detail": self.detail}
+
+    class TaskState:  # type: ignore
+        working = "working"
+        completed = "completed"
+
+    def new_agent_text_message(text: str, context_id: Optional[str] = None) -> Any:  # type: ignore
+        class _Msg:
+            pass
+        m = _Msg()
+        m.text = text
+        return m
+
+from .bargaining_env.run_entire_matrix import run_matrix_pipeline
+from .bargaining_env.main import run_analysis
 
 logger = logging.getLogger("bargaining_green")
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +83,7 @@ class BargainingGreenAgent(GreenAgent):
             return False, "When full_matrix is false, provide both 'model' and 'circle' in config."
         return True, "ok"
 
-    async def run_eval(self, req: EvalRequest, updater: TaskUpdater) -> None:
+    async def run_eval(self, req: EvalRequest, updater: Any) -> None:
         cfg = req.config or {}
         await updater.update_status(
             TaskState.working, new_agent_text_message("Starting bargaining simulations...")
@@ -120,10 +153,11 @@ class BargainingGreenAgent(GreenAgent):
                 f"Meta-game analysis complete. Results saved to {output_dir}.", context_id=updater.context_id
             ),
         )
-        await updater.add_artifact(
-            parts=[Part(root=TextPart(text=json.dumps(result.model_dump())))],
-            name="meta_game_result",
-        )
+        if HAVE_A2A:
+            await updater.add_artifact(
+                parts=[Part(root=TextPart(text=json.dumps(result.model_dump())))],
+                name="meta_game_result",
+            )
 
 
 def _run_once_from_cli(config_path: Optional[str]) -> None:
@@ -174,6 +208,8 @@ if __name__ == "__main__":
     if args.mode == "once":
         _run_once_from_cli(getattr(args, "config", None))
     else:
+        if not HAVE_A2A:
+            raise ImportError("Server mode requires 'agentbeats' and 'a2a' packages. Use 'once' mode or install dependencies.")
         # default to server mode if no subcommand
         if getattr(args, "mode", None) is None:
             args.mode = "serve"
