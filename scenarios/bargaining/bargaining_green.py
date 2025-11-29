@@ -11,11 +11,16 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from agentbeats.green_executor import GreenAgent
+from agentbeats.green_executor import GreenAgent, GreenExecutor
 from agentbeats.models import EvalRequest, EvalResult
-from a2a.types import TaskState
+from a2a.types import TaskState, Part, TextPart
 from a2a.server.tasks import TaskUpdater
 from a2a.utils import new_agent_text_message
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+import uvicorn
+import contextlib
 
 from bargaining_env.run_entire_matrix import run_matrix_pipeline
 from bargaining_env.main import run_analysis
@@ -60,6 +65,7 @@ class BargainingGreenAgent(GreenAgent):
             "date": cfg.get("date"),
             "max_rounds": cfg.get("max_rounds", 5),
             "games": cfg.get("games", 20),
+            "total_games": cfg.get("total_games"),
             "parallel": cfg.get("parallel", True),
             "discount": cfg.get("discount", 0.98),
             "skip_existing": cfg.get("skip_existing", False),
@@ -91,18 +97,10 @@ class BargainingGreenAgent(GreenAgent):
         analysis_kwargs = {
             "input_dir": base_dir,
             "output_dir": output_dir,
-            "num_bootstrap": cfg.get("bootstrap", 100),
-            "confidence": cfg.get("confidence", 0.95),
-            "global_samples": cfg.get("global_samples", 100000),
-            "use_raw_bootstrap": cfg.get("use_raw_bootstrap", True),
             "discount_factor": cfg.get("discount", 0.98),
-            "track_br_evolution": cfg.get("track_br_evolution", False),
-            "batch_size": cfg.get("batch_size", 100),
-            "num_br_bootstraps": cfg.get("num_br_bootstraps", 100),
+            "num_bootstrap": cfg.get("bootstrap", 100),
+            "norm_constants": cfg.get("norm_constants", {}),
             "random_seed": cfg.get("random_seed", 42),
-            "use_cell_based_bootstrap": cfg.get("use_cell_based_bootstrap", False),
-            "run_temporal_analysis": cfg.get("run_temporal_analysis", False),
-            "full_game_mix": cfg.get("full_game_mix", True),
         }
 
         await asyncio.to_thread(run_analysis, **analysis_kwargs)
@@ -123,7 +121,7 @@ class BargainingGreenAgent(GreenAgent):
             ),
         )
         await updater.add_artifact(
-            parts=[new_agent_text_message(json.dumps(result.model_dump()))],
+            parts=[Part(root=TextPart(text=json.dumps(result.model_dump())))],
             name="meta_game_result",
         )
 
@@ -160,7 +158,65 @@ def _run_once_from_cli(config_path: Optional[str]) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run bargaining green agent once via CLI.")
-    parser.add_argument("--config", type=str, help="Path to JSON config matching EvalRequest.config")
+    parser = argparse.ArgumentParser(description="Run the A2A bargaining green agent or a one-off CLI run.")
+    sub = parser.add_subparsers(dest="mode", required=False)
+    # server mode
+    p_srv = sub.add_parser("serve", help="Start the bargaining green A2A server")
+    p_srv.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind the server")
+    p_srv.add_argument("--port", type=int, default=9029, help="Port to bind the server")
+    p_srv.add_argument("--card-url", type=str, help="External URL to provide in the agent card")
+    p_srv.add_argument("--cloudflare-quick-tunnel", action="store_true", help="Use a Cloudflare quick tunnel. Requires cloudflared. This will override --card-url")
+    # one-off mode
+    p_one = sub.add_parser("once", help="Run a single simulation + analysis from a JSON config")
+    p_one.add_argument("--config", type=str, help="Path to JSON config matching EvalRequest.config")
     args = parser.parse_args()
-    _run_once_from_cli(args.config)
+
+    if args.mode == "once":
+        _run_once_from_cli(getattr(args, "config", None))
+    else:
+        # default to server mode if no subcommand
+        if getattr(args, "mode", None) is None:
+            args.mode = "serve"
+            args.host = "127.0.0.1"
+            args.port = 9029
+            args.card_url = None
+            args.cloudflare_quick_tunnel = False
+
+        try:
+            from scenarios.debate.debate_judge_common import debate_judge_agent_card as _card  # reuse simple card builder
+        except Exception:
+            # Minimal agent card if debate module unavailable
+            def _card(name: str, url: str) -> Dict[str, Any]:
+                return {
+                    "name": name,
+                    "version": "0.1.0",
+                    "description": "Bargaining Green Agent",
+                    "endpoints": [{"type": "http", "url": url}],
+                }
+
+        if args.cloudflare_quick_tunnel:
+            from agentbeats.cloudflare import quick_tunnel
+            agent_url_cm = quick_tunnel(f"http://{args.host}:{args.port}")
+        else:
+            from a2a.utils import strip_trailing_slash
+            base_url = f"http://{args.host}:{args.port}/"
+            agent_url_cm = contextlib.nullcontext(args.card_url or base_url)
+
+        async def _serve() -> None:
+            async with agent_url_cm as agent_url:
+                agent = BargainingGreenAgent()
+                executor = GreenExecutor(agent)
+                agent_card = _card("BargainingGreen", agent_url)
+                request_handler = DefaultRequestHandler(
+                    agent_executor=executor,
+                    task_store=InMemoryTaskStore(),
+                )
+                server = A2AStarletteApplication(
+                    agent_card=agent_card,
+                    http_handler=request_handler,
+                )
+                uvicorn_config = uvicorn.Config(server.build(), host=args.host, port=args.port)
+                uvicorn_server = uvicorn.Server(uvicorn_config)
+                await uvicorn_server.serve()
+
+        asyncio.run(_serve())
