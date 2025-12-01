@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .pyspiel_integration import try_load_pyspiel_game, build_negotiation_params
+from .agents.nfsp import NFSPAgentWrapper
+from .agents.rnad import RNaDAgentWrapper
 
 # Simple, dependency-light OpenSpiel runner for reference data dumps.
 # Only engages when pyspiel is available and explicitly requested.
@@ -203,5 +205,246 @@ def run_pyspiel_pair(
     out_file = pair_dir / f"{pair_key}.json"
     out_file.write_text(json.dumps(dump, indent=2))
     return {"status": "ok", "file": str(out_file), "games": games}
+
+
+# -------------------- NFSP-enabled runner producing JSONL traces --------------------
+
+def _decode_basic_from_obs(obs: List[float], num_items: int) -> Tuple[List[int], List[int], float]:
+    # Returns (items, values, batna)
+    items = list(map(int, obs[9: 9 + num_items]))
+    pv_start = 9 + num_items
+    pv_end = pv_start + num_items
+    vals = list(map(int, obs[pv_start:pv_end]))
+    w = float(obs[9 + 2 * num_items]) if len(obs) > (9 + 2 * num_items) else 0.0
+    return items, vals, w
+
+
+def _value(v: List[int], a: List[int]) -> int:
+    return v[0] * a[0] + v[1] * a[1] + v[2] * a[2]
+
+
+def _is_ef1(v: List[int], a_self: List[int], a_other: List[int]) -> bool:
+    self_val = _value(v, a_self)
+    other_val = _value(v, a_other)
+    if other_val <= self_val:
+        return True
+    max_item = 0
+    for k in range(3):
+        if a_other[k] > 0:
+            max_item = max(max_item, v[k])
+    return (other_val - self_val) <= max_item
+
+
+def _aspiration_step(state, quantities: Tuple[int, int, int], keep_fraction: float = 0.85) -> int:
+    # Choose a non-terminal proposal that keeps ~keep_fraction of total value (greedy)
+    actions = _list_actions(state)
+    choices = []
+    for a, s in actions:
+        if AGREE_TOKEN in s or WALK_TOKEN in s.lower():
+            continue
+        keep = _parse_keep_vector(s)
+        if keep is None or len(keep) != len(quantities):
+            continue
+        choices.append(a)
+    if choices:
+        # Simple heuristic fallback: random among non-terminals
+        return random.choice(choices)
+    return actions[0][0] if actions else 0
+
+
+def run_pyspiel_pair_nfsp_with_traces(
+    *,
+    pair_key: str,
+    agent_row: str,
+    agent_col: str,
+    discount: float,
+    max_rounds: int,
+    num_items: int,
+    quantities: Tuple[int, int, int],
+    games: int,
+    out_dir: Path,
+    nfsp_checkpoint_path: Optional[str],
+    rnad_checkpoint_path: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Run OpenSpiel negotiation games where at least one agent is NFSP or RNAD.
+    Writes JSONL traces compatible with the lightweight simulator format and
+    returns aggregate payoffs for payoffs.json.
+    """
+    params = build_negotiation_params(
+        discount=discount,
+        max_rounds=max_rounds,
+        num_items=num_items,
+        item_quantities=quantities,
+        min_value=1,
+        max_value=100,
+        max_quantity=10,
+    )
+    game = try_load_pyspiel_game(params)
+    if game is None:
+        raise RuntimeError("OpenSpiel 'negotiation' game is unavailable; cannot run NFSP matches.")
+
+    traces_dir = out_dir / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    trace_file = traces_dir / f"{pair_key}.jsonl"
+
+    # Aggregates
+    n_accept = 0
+    n_ef1 = 0
+    sum_row = 0.0
+    sum_col = 0.0
+
+    for gi in range(games):
+        state = game.new_initial_state()
+        round_idx = 1
+        # Instantiate NFSP/RNAD wrappers if needed
+        is_row_nfsp = "nfsp" in agent_row.lower()
+        is_col_nfsp = "nfsp" in agent_col.lower()
+        is_row_rnad = "rnad" in agent_row.lower()
+        is_col_rnad = "rnad" in agent_col.lower()
+        nfsp_row = NFSPAgentWrapper(game, 0, checkpoint_path=nfsp_checkpoint_path, discount=discount, max_rounds=max_rounds) if is_row_nfsp else None
+        nfsp_col = NFSPAgentWrapper(game, 1, checkpoint_path=nfsp_checkpoint_path, discount=discount, max_rounds=max_rounds) if is_col_nfsp else None
+        rnad_row = RNaDAgentWrapper(game, 0, checkpoint_path=rnad_checkpoint_path) if is_row_rnad else None
+        rnad_col = RNaDAgentWrapper(game, 1, checkpoint_path=rnad_checkpoint_path) if is_col_rnad else None
+
+        # Capture valuations/BATNAs from observations (best-effort) once at first decision node
+        v1 = v2 = [0, 0, 0]
+        b1 = b2 = 0.0
+        captured_info = False
+
+        # Track last proposed keep vectors to reconstruct accepted allocation
+        last_keep_from_row: Optional[List[int]] = None
+        last_keep_from_col: Optional[List[int]] = None
+        accepted = False
+        accepted_round = 1
+
+        while not state.is_terminal():
+            if state.is_chance_node():
+                outcomes = state.chance_outcomes()
+                if not outcomes:
+                    break
+                action, _ = outcomes[0]
+                state.apply_action(action)
+                continue
+
+            # First time at a decision node, capture obs-derived params
+            if not captured_info:
+                try:
+                    obs0 = state.observation_tensor(0)
+                    obs1 = state.observation_tensor(1)
+                    _, v1, b1 = _decode_basic_from_obs(obs0, num_items)
+                    _, v2, b2 = _decode_basic_from_obs(obs1, num_items)
+                except Exception:
+                    pass
+                captured_info = True
+
+            cur = state.current_player()
+            if cur == 0:
+                if is_row_nfsp and nfsp_row is not None:
+                    a = nfsp_row.step(state)
+                elif is_row_rnad and rnad_row is not None:
+                    a = rnad_row.step(state)
+                else:
+                    if "tough" in agent_row.lower():
+                        a = _tough_step(state, quantities)
+                    elif "aspire" in agent_row.lower() or "aspiration" in agent_row.lower():
+                        a = _aspiration_step(state, quantities)
+                    else:
+                        a = _soft_step(state)
+            else:
+                if is_col_nfsp and nfsp_col is not None:
+                    a = nfsp_col.step(state)
+                elif is_col_rnad and rnad_col is not None:
+                    a = rnad_col.step(state)
+                else:
+                    if "tough" in agent_col.lower():
+                        a = _tough_step(state, quantities)
+                    elif "aspire" in agent_col.lower() or "aspiration" in agent_col.lower():
+                        a = _aspiration_step(state, quantities)
+                    else:
+                        a = _soft_step(state)
+
+            # Decode keep vector for proposals
+            try:
+                a_str = state.action_to_string(cur, a)
+            except Exception:
+                a_str = str(a)
+            keep_vec = _parse_keep_vector(a_str)
+            if keep_vec is not None and len(keep_vec) == len(quantities):
+                if cur == 0:
+                    last_keep_from_row = keep_vec
+                else:
+                    last_keep_from_col = keep_vec
+
+            # Check if accepting
+            if AGREE_TOKEN in a_str:
+                accepted = True
+                accepted_round = round_idx
+
+            state.apply_action(a)
+            if cur == 1:
+                round_idx += 1
+            if round_idx > max_rounds:
+                break
+
+        # Compute payoffs and record JSONL
+        if accepted:
+            # Accepted allocation is the proposal on the table; if the last mover was col (1), then accepted_round logic already set
+            # Use the last proposal emitted before acceptance: if acceptance happened by row, then previous was col's keep; and vice-versa.
+            # Approximation: prefer the last_keep_from_col if available at even rounds, else last_keep_from_row.
+            if accepted_round % 2 == 0:
+                # Column just moved this round
+                keep_for_row = last_keep_from_col or [quantities[0] // 2, quantities[1] // 2, quantities[2] // 2]
+            else:
+                keep_for_row = last_keep_from_row or [quantities[0] // 2, quantities[1] // 2, quantities[2] // 2]
+            a1 = keep_for_row
+            a2 = [quantities[i] - a1[i] for i in range(len(quantities))]
+            disc = discount ** (accepted_round - 1)
+            p1 = float(_value(v1, a1)) * disc
+            p2 = float(_value(v2, a2)) * disc
+            ef1_ok = _is_ef1(v1, a1, a2) and _is_ef1(v2, a2, a1)
+        else:
+            # Walk: both get BATNAs discounted at the last round reached (cap at max_rounds)
+            end_round = min(round_idx, max_rounds)
+            disc = discount ** (end_round - 1)
+            p1 = float(b1) * disc
+            p2 = float(b2) * disc
+            ef1_ok = None
+
+        # Write record
+        rec = {
+            "pair": pair_key,
+            "game": gi,
+            "accepted": bool(accepted),
+            "round": int(accepted_round if accepted else min(round_idx, max_rounds)),
+            "q": list(quantities),
+            "v1": list(map(int, v1)),
+            "v2": list(map(int, v2)),
+            "b1": float(b1),
+            "b2": float(b2),
+            "a1": a1 if accepted else [0, 0, 0],
+            "a2": a2 if accepted else [0, 0, 0],
+            "payoff1": p1,
+            "payoff2": p2,
+            "ef1": ef1_ok,
+        }
+        with (trace_file).open("a") as f:
+            f.write(json.dumps(rec) + "\n")
+        # Aggregates
+        if accepted:
+            n_accept += 1
+            if isinstance(ef1_ok, bool) and ef1_ok:
+                n_ef1 += 1
+        sum_row += p1
+        sum_col += p2
+
+    return {
+        "pair": pair_key,
+        "trace_file": str(trace_file),
+        "accept_rate": n_accept / max(1, games),
+        "ef1_rate": n_ef1 / max(1, n_accept) if n_accept else 0.0,
+        "row_mean_payoff": sum_row / max(1, games),
+        "col_mean_payoff": sum_col / max(1, games),
+    }
 
 

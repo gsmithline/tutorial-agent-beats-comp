@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any, Callable, Optional
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -55,13 +56,38 @@ def load_custom_decider(module_path: Optional[str]) -> Optional[Callable[[str, O
 
 
 class LLMAgent(AgentExecutor):
-	def __init__(self, model: str, system_prompt: Optional[str], custom_decider: Optional[Callable[[str, Optional[list[str]]], str]] = None, trace_dir: Optional[str] = None, agent_name: str = "BargainingLLM"):
-		self._client = genai.Client()
+	def __init__(
+		self,
+		model: str,
+		system_prompt: Optional[str],
+		custom_decider: Optional[Callable[[str, Optional[list[str]]], str]] = None,
+		trace_dir: Optional[str] = None,
+		agent_name: str = "BargainingLLM",
+		# Provider config
+		provider: str = os.environ.get("LLM_AGENT_PROVIDER", "gemini"),
+		api_key: Optional[str] = None,
+		base_url: Optional[str] = None,
+		headers: Optional[dict[str, str]] = None,
+		temperature: float = 0.0,
+		top_p: Optional[float] = None,
+		timeout: int = 60,
+	):
+		self._provider = (provider or "gemini").lower()
 		self._model = model
 		self._system_prompt = system_prompt
 		self._custom_decider = custom_decider
 		self._tracer = ReasoningTracer(base_dir=trace_dir)
 		self._agent_name = agent_name
+		self._api_key = api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+		self._base_url = base_url
+		self._headers = headers or {}
+		self._temperature = float(temperature)
+		self._top_p = top_p
+		self._timeout = int(timeout)
+		# Lazy clients (created on first use)
+		self._gemini_client = None
+		self._openai_client = None
+		self._anthropic_client = None
 
 	async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
 		msg = context.message
@@ -129,38 +155,114 @@ class LLMAgent(AgentExecutor):
 		raise ServerError(error=UnsupportedOperationError())
 
 	def _freeform(self, prompt: str) -> tuple[str, str]:
-		resp = self._client.models.generate_content(
-			model=self._model,
-			config=genai.types.GenerateContentConfig(
-				system_instruction=self._system_prompt or "",
-				response_mime_type="text/plain",
-			),
-			contents=prompt,
-		)
-		text = resp.text or ""
-		return text, text
+		provider = self._provider
+		sys_inst = self._system_prompt or ""
+		# Gemini
+		if provider == "gemini":
+			if self._gemini_client is None:
+				self._gemini_client = genai.Client()
+			resp = self._gemini_client.models.generate_content(
+				model=self._model,
+				config=genai.types.GenerateContentConfig(
+					system_instruction=sys_inst,
+					response_mime_type="text/plain",
+					temperature=self._temperature,
+				),
+				contents=prompt,
+			)
+			text = resp.text or ""
+			return text, text
+		# OpenAI API
+		if provider == "openai":
+			try:
+				from openai import OpenAI  # type: ignore
+			except Exception as e:
+				raise RuntimeError(f"openai package not available: {e}")
+			if self._openai_client is None:
+				self._openai_client = OpenAI(api_key=self._api_key)
+			resp = self._openai_client.chat.completions.create(
+				model=self._model,
+				messages=(
+					([{"role": "system", "content": sys_inst}] if sys_inst else []) +
+					[{"role": "user", "content": prompt}]
+				),
+				temperature=self._temperature,
+				top_p=self._top_p,
+				timeout=self._timeout,
+			)
+			text = (resp.choices[0].message.content or "").strip()
+			return text, text
+		# Anthropic
+		if provider == "anthropic":
+			try:
+				import anthropic  # type: ignore
+			except Exception as e:
+				raise RuntimeError(f"anthropic package not available: {e}")
+			if self._anthropic_client is None:
+				self._anthropic_client = anthropic.Anthropic(api_key=self._api_key)
+			msg = self._anthropic_client.messages.create(
+				model=self._model,
+				max_tokens=2048,
+				temperature=self._temperature,
+				system=sys_inst if sys_inst else None,
+				messages=[{"role": "user", "content": prompt}],
+			)
+			try:
+				text = "".join([b.text for b in msg.content if getattr(b, "type", "") == "text"])
+			except Exception:
+				text = ""
+			return text, text
+		# OpenAI-compatible HTTP endpoint (incl. Azure OpenAI, vLLM, Ollama w/ compat)
+		if provider in ("openai_compat", "http", "http_compat"):
+			try:
+				import requests  # type: ignore
+			except Exception as e:
+				raise RuntimeError(f"requests package not available for HTTP provider: {e}")
+			if not self._base_url:
+				raise RuntimeError("base_url is required for openai_compat/http provider")
+			url = self._base_url
+			if "chat/completions" not in url:
+				url = urljoin(self._base_url.rstrip("/") + "/", "v1/chat/completions")
+			headers = dict(self._headers)
+			if self._api_key and "authorization" not in {k.lower(): v for k, v in headers.items()}:
+				headers["Authorization"] = f"Bearer {self._api_key}"
+			payload = {
+				"model": self._model,
+				"messages": (
+					([{"role": "system", "content": sys_inst}] if sys_inst else []) +
+					[{"role": "user", "content": prompt}]
+				),
+				"temperature": self._temperature,
+			}
+			r = requests.post(url, headers=headers, json=payload, timeout=self._timeout)
+			r.raise_for_status()
+			data = r.json()
+			try:
+				text = (data["choices"][0]["message"]["content"] or "").strip()
+			except Exception:
+				text = json.dumps(data)
+			return text, text
+		raise RuntimeError(f"Unsupported provider: {provider}")
 
 	def _choose_from_options(self, prompt: str, options: list[str]) -> tuple[str, str]:
 		sys_inst = (self._system_prompt or "") + "\nSelect the best option index and respond ONLY with the integer index."
 		opt_text = "\n".join(f"{i}: {opt}" for i, opt in enumerate(options))
 		content = f"{prompt}\nOptions:\n{opt_text}\nAnswer index only."
-		resp = self._client.models.generate_content(
-			model=self._model,
-			config=genai.types.GenerateContentConfig(
-				system_instruction=sys_inst,
-				response_mime_type="text/plain",
-			),
-			contents=content,
-		)
-		text = (resp.text or "").strip()
+		# Reuse _freeform generation with adjusted system content
+		orig_prompt = self._system_prompt
 		try:
-			idx = int(text.split()[0])
-			if 0 <= idx < len(options):
-				return options[idx], text
-		except Exception:
-			pass
-		# Fallback to first option if parsing fails
-		return (options[0] if options else ""), text
+			self._system_prompt = sys_inst
+			text, raw = self._freeform(content)
+			text = (text or "").strip()
+			try:
+				idx = int(text.split()[0])
+				if 0 <= idx < len(options):
+					return options[idx], raw
+			except Exception:
+				pass
+			return (options[0] if options else ""), raw
+		finally:
+			self._system_prompt = orig_prompt
 
 
 @dataclass
@@ -181,6 +283,14 @@ def main():
 	parser.add_argument("--custom-decider", type=str, help="Path to a Python file exposing decide(prompt, options)->str")
 	parser.add_argument("--trace-dir", type=str, help="Directory to write JSONL reasoning logs")
 	parser.add_argument("--agent-name", type=str, default="BargainingLLM", help="Agent name used in trace logs")
+	# Provider settings
+	parser.add_argument("--provider", type=str, default=os.environ.get("LLM_AGENT_PROVIDER", "gemini"), help="gemini | openai | anthropic | openai_compat | http")
+	parser.add_argument("--api-key", type=str, default=os.environ.get("LLM_API_KEY"))
+	parser.add_argument("--base-url", type=str, help="Base URL for provider (for openai_compat/http)")
+	parser.add_argument("--headers-json", type=str, help="Path to JSON file with extra HTTP headers")
+	parser.add_argument("--temperature", type=float, default=float(os.environ.get("LLM_TEMPERATURE", "0.0")))
+	parser.add_argument("--top-p", type=float, default=None)
+	parser.add_argument("--timeout", type=int, default=int(os.environ.get("LLM_TIMEOUT", "60")))
 	args = parser.parse_args()
 
 	system_prompt = None
@@ -198,6 +308,14 @@ def main():
 	else:
 		agent_url_cm = contextlib.nullcontext(args.card_url or f"http://{args.host}:{args.port}/")
 
+	headers: dict[str, str] | None = None
+	if args.headers_json and os.path.exists(args.headers_json):
+		try:
+			with open(args.headers_json, "r") as hf:
+				headers = json.load(hf)
+		except Exception:
+			headers = None
+
 	async def _serve():
 		async with agent_url_cm as agent_url:
 			executor = LLMAgent(
@@ -206,6 +324,13 @@ def main():
 				custom_decider=custom_decider,
 				trace_dir=args.trace_dir,
 				agent_name=args.agent_name,
+				provider=args.provider,
+				api_key=args.api_key,
+				base_url=args.base_url,
+				headers=headers,
+				temperature=args.temperature,
+				top_p=args.top_p,
+				timeout=args.timeout,
 			)
 			card = minimal_agent_card("BargainingLLM", agent_url)
 			request_handler = DefaultRequestHandler(agent_executor=executor, task_store=InMemoryTaskStore())

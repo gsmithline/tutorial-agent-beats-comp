@@ -117,6 +117,8 @@ class BargainingGreenAgent(GreenAgent):
                 model_circles=model_circles,
                 model_shortnames=model_shortnames,
                 **sim_kwargs,
+				nfsp_checkpoint_path=cfg.get("nfsp_checkpoint_path"),
+				rnad_checkpoint_path=cfg.get("rnad_checkpoint_path"),
             )
 
         sim_result = await asyncio.to_thread(_run_matrix)

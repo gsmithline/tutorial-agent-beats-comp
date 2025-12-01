@@ -12,7 +12,7 @@ from .agents.tough import ToughNegotiator
 from .agents.aspiration import AspirationNegotiator
 from .agents.base import BaseNegotiator
 from .pyspiel_integration import build_negotiation_params, try_load_pyspiel_game
-from .pyspiel_runner import run_pyspiel_pair
+from .pyspiel_runner import run_pyspiel_pair, run_pyspiel_pair_nfsp_with_traces
 
 # BGS parameters (small game): fixed items
 Q_BGS: Tuple[int, int, int] = (7, 4, 1)  # quantities per item type
@@ -283,6 +283,8 @@ def run_matrix_pipeline(
     num_items: int = 3,
     debug: bool = False,
     pyspiel_dump_games: int = 0,
+    nfsp_checkpoint_path: str | None = None,
+    rnad_checkpoint_path: str | None = None,
 ) -> Dict[str, Any]:
     """Simulate bargaining for a roster of 'agents' and save traces and payoffs."""
     assert num_items == 3, "This lightweight pipeline only supports BGS (3 items)."
@@ -375,14 +377,36 @@ def run_matrix_pipeline(
             g_row = per_pair_total // 2
             g_col = per_pair_total - g_row
 
+            def _has_rl(x: str) -> bool:
+                s = str(x).lower()
+                return ("nfsp" in s) or ("rnad" in s)
+
             if g_row > 0:
                 pair_key = f"{ai}__vs__{aj}"
-                sim = _simulate_pair(ai, aj, params, g_row, base_dir, pair_key)
+                # If either is NFSP, run via OpenSpiel NFSP runner producing traces
+                if (_has_rl(ai) or _has_rl(aj)):
+                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
+                        raise RuntimeError(f"NFSP requested for {pair_key} but OpenSpiel negotiation game unavailable.")
+                    sim = run_pyspiel_pair_nfsp_with_traces(
+                        pair_key=pair_key,
+                        agent_row=ai,
+                        agent_col=aj,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        num_items=num_items,
+                        quantities=Q_BGS,
+                        games=g_row,
+                        out_dir=base_dir,
+                        nfsp_checkpoint_path=nfsp_checkpoint_path,
+                        rnad_checkpoint_path=rnad_checkpoint_path,
+                    )
+                else:
+                    sim = _simulate_pair(ai, aj, params, g_row, base_dir, pair_key)
                 results[pair_key] = sim
                 experiments.append(pair_key)
                 if debug:
                     print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
-                if meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
+                if (not (_has_rl(ai) or _has_rl(aj))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
                     try:
                         run_pyspiel_pair(
                             pair_key=pair_key,
@@ -401,12 +425,29 @@ def run_matrix_pipeline(
 
             if g_col > 0:
                 pair_key_rev = f"{aj}__vs__{ai}"
-                sim_rev = _simulate_pair(aj, ai, params, g_col, base_dir, pair_key_rev)
+                if (_has_rl(ai) or _has_rl(aj)):
+                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
+                        raise RuntimeError(f"NFSP requested for {pair_key_rev} but OpenSpiel negotiation game unavailable.")
+                    sim_rev = run_pyspiel_pair_nfsp_with_traces(
+                        pair_key=pair_key_rev,
+                        agent_row=aj,
+                        agent_col=ai,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        num_items=num_items,
+                        quantities=Q_BGS,
+                        games=g_col,
+                        out_dir=base_dir,
+                        nfsp_checkpoint_path=nfsp_checkpoint_path,
+                        rnad_checkpoint_path=rnad_checkpoint_path,
+                    )
+                else:
+                    sim_rev = _simulate_pair(aj, ai, params, g_col, base_dir, pair_key_rev)
                 results[pair_key_rev] = sim_rev
                 experiments.append(pair_key_rev)
                 if debug:
                     print(f"Simulated {pair_key_rev}: {sim_rev['row_mean_payoff']:.1f} / {sim_rev['col_mean_payoff']:.1f}")
-                if meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
+                if (not (_has_rl(ai) or _has_rl(aj))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
                     try:
                         run_pyspiel_pair(
                             pair_key=pair_key_rev,
@@ -435,12 +476,29 @@ def run_matrix_pipeline(
             if i == j:
                 # Self-play: run all as ai vs ai once
                 pair_key = f"{ai}__vs__{aj}"
-                sim = _simulate_pair(ai, aj, params, games, base_dir, pair_key)
+                if ("nfsp" in ai.lower()) or ("rnad" in ai.lower()):
+                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
+                        raise RuntimeError(f"NFSP requested for {pair_key} but OpenSpiel negotiation game unavailable.")
+                    sim = run_pyspiel_pair_nfsp_with_traces(
+                        pair_key=pair_key,
+                        agent_row=ai,
+                        agent_col=aj,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        num_items=num_items,
+                        quantities=Q_BGS,
+                        games=games,
+                        out_dir=base_dir,
+                        nfsp_checkpoint_path=nfsp_checkpoint_path,
+                        rnad_checkpoint_path=rnad_checkpoint_path,
+                    )
+                else:
+                    sim = _simulate_pair(ai, aj, params, games, base_dir, pair_key)
                 results[pair_key] = sim
                 experiments.append(pair_key)
                 if debug:
                     print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
-                if meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
+                if (("nfsp" not in ai.lower()) and ("rnad" not in ai.lower())) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
                     try:
                         run_pyspiel_pair(
                             pair_key=pair_key,
@@ -463,12 +521,29 @@ def run_matrix_pipeline(
 
             if g_row > 0:
                 pair_key = f"{ai}__vs__{aj}"
-                sim = _simulate_pair(ai, aj, params, g_row, base_dir, pair_key)
+                if (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower())):
+                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
+                        raise RuntimeError(f"NFSP requested for {pair_key} but OpenSpiel negotiation game unavailable.")
+                    sim = run_pyspiel_pair_nfsp_with_traces(
+                        pair_key=pair_key,
+                        agent_row=ai,
+                        agent_col=aj,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        num_items=num_items,
+                        quantities=Q_BGS,
+                        games=g_row,
+                        out_dir=base_dir,
+                        nfsp_checkpoint_path=nfsp_checkpoint_path,
+                        rnad_checkpoint_path=rnad_checkpoint_path,
+                    )
+                else:
+                    sim = _simulate_pair(ai, aj, params, g_row, base_dir, pair_key)
                 results[pair_key] = sim
                 experiments.append(pair_key)
                 if debug:
                     print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
-                if meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
+                if (not (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower()))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
                     try:
                         run_pyspiel_pair(
                             pair_key=pair_key,
@@ -487,12 +562,29 @@ def run_matrix_pipeline(
 
             if g_col > 0:
                 pair_key_rev = f"{aj}__vs__{ai}"
-                sim_rev = _simulate_pair(aj, ai, params, g_col, base_dir, pair_key_rev)
+                if (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower())):
+                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
+                        raise RuntimeError(f"NFSP requested for {pair_key_rev} but OpenSpiel negotiation game unavailable.")
+                    sim_rev = run_pyspiel_pair_nfsp_with_traces(
+                        pair_key=pair_key_rev,
+                        agent_row=aj,
+                        agent_col=ai,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        num_items=num_items,
+                        quantities=Q_BGS,
+                        games=g_col,
+                        out_dir=base_dir,
+                        nfsp_checkpoint_path=nfsp_checkpoint_path,
+                        rnad_checkpoint_path=rnad_checkpoint_path,
+                    )
+                else:
+                    sim_rev = _simulate_pair(aj, ai, params, g_col, base_dir, pair_key_rev)
                 results[pair_key_rev] = sim_rev
                 experiments.append(pair_key_rev)
                 if debug:
                     print(f"Simulated {pair_key_rev}: {sim_rev['row_mean_payoff']:.1f} / {sim_rev['col_mean_payoff']:.1f}")
-                if meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
+                if (not (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower()))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
                     try:
                         run_pyspiel_pair(
                             pair_key=pair_key_rev,
