@@ -5,6 +5,7 @@ from .aspiration import AspirationNegotiator
 from .llm_agent import LLMAgent, LLMSpec
 from .nfsp import NFSPAgentWrapper
 from .rnad import RNaDAgentWrapper
+from .remote import RemoteNegotiator
 
 __all__ = [
 	"BaseNegotiator",
@@ -15,6 +16,7 @@ __all__ = [
 	"LLMSpec",
 	"NFSPAgentWrapper",
 	"RNaDAgentWrapper",
+	"RemoteNegotiator",
 ]
 
 

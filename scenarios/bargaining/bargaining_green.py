@@ -70,11 +70,15 @@ class BargainingGreenAgent(GreenAgent):
     """
 
     def __init__(self):
-        # No fixed roles; participants can be empty.
-        self._required_roles = []
+        # Require at least one challenger participant to compare against baselines.
+        self._required_roles = ["challenger"]
         self._required_config_keys = []
 
     def validate_request(self, request: EvalRequest) -> tuple[bool, str]:
+        participants = request.participants or {}
+        missing_roles = set(self._required_roles) - set(participants.keys())
+        if missing_roles:
+            return False, f"Missing roles: {missing_roles}"
         cfg = request.config or {}
         full_matrix = cfg.get("full_matrix", True)
         model = cfg.get("model")
@@ -85,6 +89,7 @@ class BargainingGreenAgent(GreenAgent):
 
     async def run_eval(self, req: EvalRequest, updater: Any) -> None:
         cfg = req.config or {}
+        participants = req.participants or {}
         await updater.update_status(
             TaskState.working, new_agent_text_message("Starting bargaining simulations...")
         )
@@ -108,6 +113,36 @@ class BargainingGreenAgent(GreenAgent):
             "num_items": cfg.get("num_items", 3),
             "debug": cfg.get("debug", False),
         }
+
+        challenger_label = cfg.get("challenger_label", "challenger")
+        challenger_url = participants.get("challenger")
+        remote_agents_cfg: Dict[str, str] = {}
+        cfg_remote_agents = cfg.get("remote_agents")
+        if isinstance(cfg_remote_agents, dict):
+            remote_agents_cfg.update({str(k): str(v) for k, v in cfg_remote_agents.items()})
+        if challenger_url:
+            remote_agents_cfg.setdefault(str(challenger_label), str(challenger_url))
+            sim_kwargs["challenger_url"] = str(challenger_url)
+        sim_kwargs["challenger_label"] = str(challenger_label)
+        if remote_agents_cfg:
+            sim_kwargs["remote_agents"] = remote_agents_cfg
+        # Optional prompt circle selection for remote entrants
+        challenger_circle = cfg.get("challenger_circle")
+        circle_map: Dict[str, int] = {}
+        cfg_remote_circles = cfg.get("remote_agent_circles")
+        if isinstance(cfg_remote_circles, dict):
+            for label, circle_val in cfg_remote_circles.items():
+                try:
+                    circle_map[str(label)] = int(circle_val)
+                except Exception:
+                    continue
+        if challenger_circle is not None:
+            try:
+                circle_map.setdefault(str(challenger_label), int(challenger_circle))
+            except Exception:
+                pass
+        if circle_map:
+            sim_kwargs["remote_agent_circles"] = circle_map
 
         model_circles = cfg.get("model_circles")
         model_shortnames = cfg.get("model_shortnames")
@@ -163,12 +198,17 @@ class BargainingGreenAgent(GreenAgent):
 
 
 def _run_once_from_cli(config_path: Optional[str]) -> None:
-    cfg: Dict[str, Any] = {}
+    cfg_raw: Dict[str, Any] = {}
     if config_path:
         with open(config_path, "r") as f:
-            cfg = json.load(f)
+            cfg_raw = json.load(f)
+    cfg: Dict[str, Any] = dict(cfg_raw)
+    participants = cfg.pop("participants", {})
+    inline_challenger = cfg.pop("challenger_url", None)
+    if inline_challenger and "challenger" not in participants:
+        participants["challenger"] = inline_challenger
 
-    dummy_req = EvalRequest(participants={}, config=cfg)
+    dummy_req = EvalRequest(participants=participants, config=cfg)
     agent = BargainingGreenAgent()
     ok, msg = agent.validate_request(dummy_req)
     if not ok:

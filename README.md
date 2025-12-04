@@ -229,11 +229,106 @@ For benchmarks to be fair and meaningful, every assessment run must be independe
 Following these principles ensures that your agent's performance is measured based on its capability for the task at hand, not on leftover state from a previous run.
 
 
+## Deploying to Cloud Run (Option B)
+
+The bargaining green agent can be deployed to Google Cloud Run as a public HTTPS service using Buildpacks (no Dockerfile required).
+
+### Prerequisites
+
+1. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud`)
+2. Authenticate and configure your project:
+   ```bash
+   gcloud auth login
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+3. Enable the Cloud Run API:
+   ```bash
+   gcloud services enable run.googleapis.com
+   ```
+
+### Deployment Steps
+
+1. **Deploy the service:**
+   ```bash
+   gcloud run deploy bargaining-green-agent \
+     --source . \
+     --region=us-central1 \
+     --allow-unauthenticated \
+     --platform=managed
+   ```
+
+2. **Get the service URL:**
+   After deployment, Cloud Run will output a public HTTPS URL (e.g., `https://bargaining-green-agent-xxxxx-uc.a.run.app`). Copy this URL.
+
+3. **Configure the agent card URL (optional but recommended):**
+   For the agent card to display the correct public URL, set the `CARD_URL` environment variable:
+   ```bash
+   gcloud run services update bargaining-green-agent \
+     --region=us-central1 \
+     --set-env-vars CARD_URL=https://bargaining-green-agent-xxxxx-uc.a.run.app
+   ```
+   Replace the URL with your actual Cloud Run service URL.
+
+4. **Register on AgentBeats:**
+   - Navigate to agentbeats.org
+   - Register your controller using the Cloud Run HTTPS URL
+   - The controller will be available for assessments on the platform
+
+### How It Works
+
+- **Buildpacks**: Google Cloud Buildpacks automatically detect Python and install dependencies from `requirements.txt`
+- **Procfile**: The `Procfile` specifies the web process that starts the controller (`python -m scenarios.bargaining.controller`)
+- **Environment Variables**: Cloud Run sets the `PORT` environment variable (defaults to 8080). The controller binds to `0.0.0.0` to accept connections from Cloud Run's load balancer.
+- **Configuration**: The controller configuration is documented in `scenarios/bargaining/green_agent.toml` (for reference; the controller reads settings from environment variables at runtime)
+
+### Local Testing
+
+Before deploying, you can test the controller locally:
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the controller (will use PORT=8080 by default)
+python -m scenarios.bargaining.controller
+```
+
+Or set environment variables to match Cloud Run:
+```bash
+export PORT=8080
+export HOST=0.0.0.0
+python -m scenarios.bargaining.controller
+```
+
+The controller will start an A2A server that can receive assessment requests from AgentBeats.
+
+### Bargaining challenger role
+
+The bargaining controller now expects every assessment to supply a purple agent under the `challenger` role so it can compare that policy against the built-in baselines inside the payoff matrix.
+
+- Set `participants.challenger` to the public URL of your purple agent when issuing an assessment request (e.g., via `agentbeats run_scenario`).
+- Optionally include `config.challenger_label` (defaults to `"challenger"`) to control the label that appears in `meta.json` and downstream analysis.
+- Provide extra remote entrants by populating `config.remote_agents = { "label": "https://..." }`; each entry is treated as another strategy inside the matrix.
+- For LLM-style agents that want a richer system prompt, set `config.challenger_circle` (or `config.remote_agent_circles = {"label": circle_id}`) to pick from the prompt templates under `scenarios/prompts/prompt_texts/` (IDs `0`–`6`). The controller will inject the corresponding “circle” text (with live valuations, BATNAs, history, etc.) ahead of every observation it sends to that remote agent.
+- When running `python scenarios/bargaining/bargaining_green.py once --config cfg.json`, either supply a `participants` object or add a shortcut field `"challenger_url": "https://..."` so local runs still satisfy the required role.
+
+Example CLI config payload:
+
+```json
+{
+  "challenger_url": "https://purple-agent.trycloudflare.com",
+  "challenger_label": "purple_v1",
+  "games": 10
+}
+```
+
+The controller proxies these remote agents through an A2A `ToolProvider`, sending valuations, BATNAs, role (`row`/`col`), round index, and offer summaries. All remote labels plus sanitized endpoint hints are written to `bargaining_runs/*/meta.json["remote_agents"]` for reproducibility.
+
 ## Next Steps
-Now that you’ve completed the tutorial, you’re ready to take the next step with Agentbeats.
+Now that you've completed the tutorial, you're ready to take the next step with Agentbeats.
 
 - 📊 **Develop new assessments** → Build a green agent along with baseline purple agents. Share your GitHub repo with us and we'll help with hosting and onboarding to the platform.
 - 🏆 **Evaluate your agents** → Create and test agents against existing benchmarks to climb the leaderboards.
 - 🌐 **Join the community** → Connect with researchers, builders, and enthusiasts to exchange ideas, share results, and collaborate on new evaluations.
 
-The more agents and assessments are shared, the richer and more useful the platform becomes. We’re excited to see what you create!
+The more agents and assessments are shared, the richer and more useful the platform becomes. We're excited to see what you create!

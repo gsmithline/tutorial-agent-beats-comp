@@ -1,0 +1,23 @@
+# AgentBeats Controller Configuration for Bargaining Green Agent
+# This config file is used by `agentbeats run_ctrl` command
+
+[controller]
+name = "BargainingGreen"
+description = "Bargaining meta-game analysis controller for AgentBeats"
+version = "0.1.0"
+# Entrypoint module and function
+entrypoint = "scenarios.bargaining.controller:main"
+# The controller requires a `challenger` participant in each assessment request.
+# Supply the purple agent URL under that role (and optionally set `challenger_label`,
+# `challenger_circle`, `remote_agents`, or `remote_agent_circles` in the request config)
+# when running evaluations.
+
+[server]
+# Cloud Run will set PORT environment variable (defaults to 8080)
+# Host should bind to 0.0.0.0 to accept connections from Cloud Run's load balancer
+host = "0.0.0.0"
+port = 8080  # Will be overridden by $PORT env var in Cloud Run
+
+# Optional: Set CARD_URL environment variable in Cloud Run to override the agent card URL
+# This should be set to the public HTTPS URL provided by Cloud Run
+

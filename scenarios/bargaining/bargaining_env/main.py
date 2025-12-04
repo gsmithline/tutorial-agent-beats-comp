@@ -173,12 +173,16 @@ def run_analysis(
 		W_nw = [[0.0 for _ in range(num_agents)] for _ in range(num_agents)]
 		W_nwa = [[0.0 for _ in range(num_agents)] for _ in range(num_agents)]
 		W_ef1 = [[0.0 for _ in range(num_agents)] for _ in range(num_agents)]
+		sample_cache: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+		stats_cache: Dict[Tuple[int, int], Dict[str, float]] = {}
 
 		for i in range(num_agents):
 			for j in range(num_agents):
 				recs_ij = ordered_data[(i, j)]
 				sample_ij = bootstrap_sample(recs_ij)
 				stats_ij = ordered_stats(sample_ij)
+				sample_cache[(i, j)] = sample_ij
+				stats_cache[(i, j)] = stats_ij
 				if i == j:
 					M[i][j] = stats_ij["row_mean"]
 				W_uw[i][j] = stats_ij["uw_norm"]
@@ -191,10 +195,10 @@ def run_analysis(
 			for j in range(num_agents):
 				if i == j:
 					continue
-				# payoff of agent i vs j under random roles:
-				# average of (i as row vs j) and (i as col vs j) which is col of j vs i
-				row_mean = ordered_stats(bootstrap_sample(ordered_data[(i, j)]))["row_mean"] if ordered_data[(i, j)] else 0.0
-				col_from_rev = ordered_stats(bootstrap_sample(ordered_data[(j, i)]))["col_mean"] if ordered_data[(j, i)] else 0.0
+				row_stats = stats_cache.get((i, j))
+				col_stats = stats_cache.get((j, i))
+				row_mean = row_stats["row_mean"] if row_stats else 0.0
+				col_from_rev = col_stats["col_mean"] if col_stats else 0.0
 				M[i][j] = 0.5 * (row_mean + col_from_rev)
 
 		# Solve MENE
