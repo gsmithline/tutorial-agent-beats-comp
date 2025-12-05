@@ -1,0 +1,202 @@
+{
+  "soft__vs__tough": {
+    "pair": "soft__vs__tough",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/soft__vs__tough.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 547.8199999999999,
+    "col_mean_payoff": 40.376
+  },
+  "tough__vs__soft": {
+    "pair": "tough__vs__soft",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/tough__vs__soft.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 538.4,
+    "col_mean_payoff": 50.8
+  },
+  "soft__vs__aspiration": {
+    "pair": "soft__vs__aspiration",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/soft__vs__aspiration.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 202.468,
+    "col_mean_payoff": 378.476
+  },
+  "soft__vs__soft": {
+    "pair": "soft__vs__soft",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/soft__vs__soft.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.1,
+    "row_mean_payoff": 363.3,
+    "col_mean_payoff": 285.3
+  },
+  "aspiration__vs__soft": {
+    "pair": "aspiration__vs__soft",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/aspiration__vs__soft.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.4,
+    "row_mean_payoff": 217.8,
+    "col_mean_payoff": 434.4
+  },
+  "soft__vs__walk": {
+    "pair": "soft__vs__walk",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/soft__vs__walk.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.2,
+    "row_mean_payoff": 143.0,
+    "col_mean_payoff": 292.0
+  },
+  "walk__vs__soft": {
+    "pair": "walk__vs__soft",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/walk__vs__soft.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.4,
+    "row_mean_payoff": 387.8,
+    "col_mean_payoff": 243.4
+  },
+  "tough__vs__aspiration": {
+    "pair": "tough__vs__aspiration",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/tough__vs__aspiration.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 376.86096,
+    "col_mean_payoff": 207.44639999999998
+  },
+  "tough__vs__tough": {
+    "pair": "tough__vs__tough",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/tough__vs__tough.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 291.19328,
+    "col_mean_payoff": 376.66887999999994
+  },
+  "aspiration__vs__tough": {
+    "pair": "aspiration__vs__tough",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/aspiration__vs__tough.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 201.49192,
+    "col_mean_payoff": 264.49416
+  },
+  "tough__vs__walk": {
+    "pair": "tough__vs__walk",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/tough__vs__walk.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 446.8,
+    "col_mean_payoff": 41.2
+  },
+  "walk__vs__tough": {
+    "pair": "walk__vs__tough",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/walk__vs__tough.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 600.9359999999999,
+    "col_mean_payoff": 32.536
+  },
+  "challenger__vs__tough": {
+    "pair": "challenger__vs__tough",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/challenger__vs__tough.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 457.4,
+    "col_mean_payoff": 251.2
+  },
+  "challenger__vs__soft": {
+    "pair": "challenger__vs__soft",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/challenger__vs__soft.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 422.2,
+    "col_mean_payoff": 398.0
+  },
+  "aspiration__vs__walk": {
+    "pair": "aspiration__vs__walk",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/aspiration__vs__walk.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 418.4,
+    "col_mean_payoff": 364.4
+  },
+  "aspiration__vs__aspiration": {
+    "pair": "aspiration__vs__aspiration",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/aspiration__vs__aspiration.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 424.40076,
+    "col_mean_payoff": 261.51691999999997
+  },
+  "walk__vs__aspiration": {
+    "pair": "walk__vs__aspiration",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/walk__vs__aspiration.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.4,
+    "row_mean_payoff": 385.72799999999995,
+    "col_mean_payoff": 271.852
+  },
+  "soft__vs__challenger": {
+    "pair": "soft__vs__challenger",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/soft__vs__challenger.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 176.4,
+    "col_mean_payoff": 284.396
+  },
+  "walk__vs__walk": {
+    "pair": "walk__vs__walk",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/walk__vs__walk.jsonl",
+    "accept_rate": 1.0,
+    "ef1_rate": 0.1,
+    "row_mean_payoff": 275.0,
+    "col_mean_payoff": 251.9
+  },
+  "challenger__vs__aspiration": {
+    "pair": "challenger__vs__aspiration",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/challenger__vs__aspiration.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 398.8,
+    "col_mean_payoff": 219.8
+  },
+  "tough__vs__challenger": {
+    "pair": "tough__vs__challenger",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/tough__vs__challenger.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 351.624,
+    "col_mean_payoff": 312.42400000000004
+  },
+  "aspiration__vs__challenger": {
+    "pair": "aspiration__vs__challenger",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/aspiration__vs__challenger.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 537.236,
+    "col_mean_payoff": 403.56399999999996
+  },
+  "challenger__vs__walk": {
+    "pair": "challenger__vs__walk",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/challenger__vs__walk.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 218.0,
+    "col_mean_payoff": 248.2
+  },
+  "walk__vs__challenger": {
+    "pair": "walk__vs__challenger",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/walk__vs__challenger.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 204.42799999999997,
+    "col_mean_payoff": 423.16400000000004
+  },
+  "challenger__vs__challenger": {
+    "pair": "challenger__vs__challenger",
+    "trace_file": "bargaining_runs/BGS_matrix_1_20251205_123849/traces/challenger__vs__challenger.jsonl",
+    "accept_rate": 0.0,
+    "ef1_rate": 0.0,
+    "row_mean_payoff": 252.6,
+    "col_mean_payoff": 306.7
+  }
+}

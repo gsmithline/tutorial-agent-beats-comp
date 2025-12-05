@@ -222,7 +222,7 @@ def run_analysis(
 					nwa_ij = W_nwa[i][i]
 					ef1_ij = W_ef1[i][i]
 				else:
-					# average of both role-ordered datasets
+					#, should all be same 
 					uw_ij = 0.5 * (W_uw[i][j] + W_uw[j][i])
 					nw_ij = 0.5 * (W_nw[i][j] + W_nw[j][i])
 					nwa_ij = 0.5 * (W_nwa[i][j] + W_nwa[j][i])

@@ -1,5 +1,5 @@
 import numpy as np  # noqa: F401
-from utils.offer import Offer
+from scenarios.utils.offer import Offer
 
 '''
 CIRCLE OF ERRORS
@@ -11,7 +11,7 @@ def make_prompt_circle_3(T: int, quantities: list[int], V: int, values: list[flo
 	You and another agent have to negotiate a division of items between the two of you.
 	You are Player {my_player_num} and the other agent is Player {other_player_num}.
 	There are {T} types of items, called item 1 through item {T}.
-	There are {', '.join([f'{q} unit{'s' if q != 1 else ''} of item {i+1}' for i, q in enumerate(quantities)])} to divide. 
+	There are {', '.join([f"{q} unit{'s' if q != 1 else ''} of item {i+1}" for i, q in enumerate(quantities)])} to divide. 
 	Both you and Player {other_player_num} have a private value per unit of each item type.
 	These values are drawn from a uniform random distribution, ranging from 1 to {V-1}.
 	Your private values are {', '.join([str(v) + ' for item ' + str(i+1) for i, v in enumerate(values)])}.

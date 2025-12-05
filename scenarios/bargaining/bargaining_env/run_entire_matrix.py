@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import concurrent.futures
 from urllib.parse import urlsplit, urlunsplit
 
 from .agents.soft import SoftNegotiator
@@ -260,7 +261,7 @@ def _simulate_pair(
                     round_index=1,
                 )
 
-            # Counterfactual if column proposes
+            #counterfactual if column proposes
             if col_impl is not None and hasattr(col_impl, "set_round"):
                 col_impl.set_round(2)
             if col_impl is not None:
@@ -344,6 +345,7 @@ def _simulate_pair(
                     "pair": pair_key,
                     "game": g,
                     "accepted": False,
+                    "terminal": "walk",
                     "round": end_round,
                     "q": params.q,
                     "v1": v1,
@@ -374,6 +376,7 @@ def _simulate_pair(
                 "pair": pair_key,
                 "game": g,
                 "accepted": True,
+                "terminal": "accept",
                 "round": accepted_round,
                 "q": params.q,
                 "v1": v1,
@@ -414,12 +417,12 @@ def run_matrix_pipeline(
     max_rounds: int = 3,
     games: int = 50,
     total_games: int | None = None,
-    parallel: bool = False,  # not used, placeholder
+    parallel: int | bool = False,  # number of worker threads; False/0 => sequential
     discount: float = 0.98,
     skip_existing: bool = False,  # not used
     force_new_dirs: bool = False,  # not used
     dry_run: bool = False,
-    use_openspiel: bool = True,  # placeholder (no external dependency)
+    use_openspiel: bool = True,  # must remain True
     num_items: int = 3,
     debug: bool = False,
     pyspiel_dump_games: int = 0,
@@ -431,7 +434,9 @@ def run_matrix_pipeline(
     challenger_circle: int | None = None,
     remote_agent_circles: Dict[str, int] | None = None,
 ) -> Dict[str, Any]:
-    """Simulate bargaining for a roster of 'agents' and save traces and payoffs."""
+    """Simulate bargaining for a roster of 'agents' on OpenSpiel and save traces and payoffs."""
+    if not use_openspiel:
+        raise ValueError("OpenSpiel negotiation is required for all matchups.")
     assert num_items == 3, "This lightweight pipeline only supports BGS (3 items)."
     tag = date or _now_tag()
     base_dir = _ensure_dir(Path("bargaining_runs") / f"BGS_matrix_{matrix_id}_{tag}")
@@ -452,7 +457,6 @@ def run_matrix_pipeline(
         except Exception:
             pass
 
-    # Normalize agent list
     if full_matrix:
         if not model_circles:
             agents = ["soft", "tough", "aspiration", "walk"]
@@ -513,7 +517,7 @@ def run_matrix_pipeline(
             ),
         },
     }
-    # Attach OpenSpiel negotiation config; try to load if requested
+    # Attach OpenSpiel negotiation config; must load successfully
     neg_params = build_negotiation_params(
         discount=discount,
         max_rounds=max_rounds,
@@ -523,10 +527,10 @@ def run_matrix_pipeline(
         max_value=V_MAX_DEFAULT,
         max_quantity=10,
     )
-    pyspiel_loaded = False
-    if use_openspiel:
-        game = try_load_pyspiel_game(neg_params)
-        pyspiel_loaded = game is not None
+    game = try_load_pyspiel_game(neg_params)
+    if game is None:
+        raise RuntimeError("Failed to load OpenSpiel negotiation game; required for all matchups.")
+    pyspiel_loaded = True
     meta["pyspiel"] = {
         "enabled": bool(use_openspiel),
         "loaded": bool(pyspiel_loaded),
@@ -544,6 +548,9 @@ def run_matrix_pipeline(
     experiments: List[str] = []
 
     # Determine role-balanced allocation
+    # Build work items (pair_key, agent_row, agent_col, num_games)
+    work: List[Tuple[str, str, str, int]] = []
+
     if total_games and total_games > 0:
         # Use unordered pairs (i <= j), split games evenly, and balance roles per pair
         unordered_pairs: List[Tuple[int, int]] = []
@@ -560,113 +567,10 @@ def run_matrix_pipeline(
             per_pair_total = base + (1 if k < remainder else 0)
             g_row = per_pair_total // 2
             g_col = per_pair_total - g_row
-
-            def _has_rl(x: str) -> bool:
-                s = str(x).lower()
-                return ("nfsp" in s) or ("rnad" in s)
-
             if g_row > 0:
-                pair_key = f"{ai}__vs__{aj}"
-                # If either is NFSP, run via OpenSpiel NFSP runner producing traces
-                if (_has_rl(ai) or _has_rl(aj)):
-                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
-                        raise RuntimeError(f"NFSP requested for {pair_key} but OpenSpiel negotiation game unavailable.")
-                    sim = run_pyspiel_pair_nfsp_with_traces(
-                        pair_key=pair_key,
-                        agent_row=ai,
-                        agent_col=aj,
-                        discount=discount,
-                        max_rounds=max_rounds,
-                        num_items=num_items,
-                        quantities=Q_BGS,
-                        games=g_row,
-                        out_dir=base_dir,
-                        nfsp_checkpoint_path=nfsp_checkpoint_path,
-                        rnad_checkpoint_path=rnad_checkpoint_path,
-                    )
-                else:
-                    sim = _simulate_pair(
-                        ai,
-                        aj,
-                        params,
-                        g_row,
-                        base_dir,
-                        pair_key,
-                        remote_agents=remote_agent_urls,
-                        remote_agent_circles=remote_circle_map,
-                        debug=debug,
-                    )
-                results[pair_key] = sim
-                experiments.append(pair_key)
-                if debug:
-                    print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
-                if (not (_has_rl(ai) or _has_rl(aj))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
-                    try:
-                        run_pyspiel_pair(
-                            pair_key=pair_key,
-                            agent_row=ai,
-                            agent_col=aj,
-                            discount=discount,
-                            max_rounds=max_rounds,
-                            num_items=num_items,
-                            quantities=Q_BGS,
-                            games=min(pyspiel_dump_games, g_row),
-                            out_dir=base_dir,
-                        )
-                    except Exception as e:
-                        if debug:
-                            print(f"[DEBUG] pyspiel dump failed for {pair_key}: {e}")
-
+                work.append((f"{ai}__vs__{aj}", ai, aj, g_row))
             if g_col > 0:
-                pair_key_rev = f"{aj}__vs__{ai}"
-                if (_has_rl(ai) or _has_rl(aj)):
-                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
-                        raise RuntimeError(f"NFSP requested for {pair_key_rev} but OpenSpiel negotiation game unavailable.")
-                    sim_rev = run_pyspiel_pair_nfsp_with_traces(
-                        pair_key=pair_key_rev,
-                        agent_row=aj,
-                        agent_col=ai,
-                        discount=discount,
-                        max_rounds=max_rounds,
-                        num_items=num_items,
-                        quantities=Q_BGS,
-                        games=g_col,
-                        out_dir=base_dir,
-                        nfsp_checkpoint_path=nfsp_checkpoint_path,
-                        rnad_checkpoint_path=rnad_checkpoint_path,
-                    )
-                else:
-                    sim_rev = _simulate_pair(
-                        aj,
-                        ai,
-                        params,
-                        g_col,
-                        base_dir,
-                        pair_key_rev,
-                        remote_agents=remote_agent_urls,
-                        remote_agent_circles=remote_circle_map,
-                        debug=debug,
-                    )
-                results[pair_key_rev] = sim_rev
-                experiments.append(pair_key_rev)
-                if debug:
-                    print(f"Simulated {pair_key_rev}: {sim_rev['row_mean_payoff']:.1f} / {sim_rev['col_mean_payoff']:.1f}")
-                if (not (_has_rl(ai) or _has_rl(aj))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
-                    try:
-                        run_pyspiel_pair(
-                            pair_key=pair_key_rev,
-                            agent_row=aj,
-                            agent_col=ai,
-                            discount=discount,
-                            max_rounds=max_rounds,
-                            num_items=num_items,
-                            quantities=Q_BGS,
-                            games=min(pyspiel_dump_games, g_col),
-                            out_dir=base_dir,
-                        )
-                    except Exception as e:
-                        if debug:
-                            print(f"[DEBUG] pyspiel dump failed for {pair_key_rev}: {e}")
+                work.append((f"{aj}__vs__{ai}", aj, ai, g_col))
     else:
         # Per-pair behavior: for each unordered matchup, run `games` total, split evenly across roles
         unordered_pairs: List[Tuple[int, int]] = []
@@ -679,161 +583,49 @@ def run_matrix_pipeline(
             ai, aj = agent_ids[i], agent_ids[j]
             if i == j:
                 # Self-play: run all as ai vs ai once
-                pair_key = f"{ai}__vs__{aj}"
-                if ("nfsp" in ai.lower()) or ("rnad" in ai.lower()):
-                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
-                        raise RuntimeError(f"NFSP requested for {pair_key} but OpenSpiel negotiation game unavailable.")
-                    sim = run_pyspiel_pair_nfsp_with_traces(
-                        pair_key=pair_key,
-                        agent_row=ai,
-                        agent_col=aj,
-                        discount=discount,
-                        max_rounds=max_rounds,
-                        num_items=num_items,
-                        quantities=Q_BGS,
-                        games=games,
-                        out_dir=base_dir,
-                        nfsp_checkpoint_path=nfsp_checkpoint_path,
-                        rnad_checkpoint_path=rnad_checkpoint_path,
-                    )
-                else:
-                    sim = _simulate_pair(
-                        ai,
-                        aj,
-                        params,
-                        games,
-                        base_dir,
-                        pair_key,
-                        remote_agents=remote_agent_urls,
-                        remote_agent_circles=remote_circle_map,
-                        debug=debug,
-                    )
-                results[pair_key] = sim
-                experiments.append(pair_key)
-                if debug:
-                    print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
-                if (("nfsp" not in ai.lower()) and ("rnad" not in ai.lower())) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
-                    try:
-                        run_pyspiel_pair(
-                            pair_key=pair_key,
-                            agent_row=ai,
-                            agent_col=aj,
-                            discount=discount,
-                            max_rounds=max_rounds,
-                            num_items=num_items,
-                            quantities=Q_BGS,
-                            games=min(pyspiel_dump_games, games),
-                            out_dir=base_dir,
-                        )
-                    except Exception as e:
-                        if debug:
-                            print(f"[DEBUG] pyspiel dump failed for {pair_key}: {e}")
+                work.append((f"{ai}__vs__{aj}", ai, aj, games))
                 continue
 
             g_row = games // 2
             g_col = games - g_row
-
             if g_row > 0:
-                pair_key = f"{ai}__vs__{aj}"
-                if (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower())):
-                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
-                        raise RuntimeError(f"NFSP requested for {pair_key} but OpenSpiel negotiation game unavailable.")
-                    sim = run_pyspiel_pair_nfsp_with_traces(
-                        pair_key=pair_key,
-                        agent_row=ai,
-                        agent_col=aj,
-                        discount=discount,
-                        max_rounds=max_rounds,
-                        num_items=num_items,
-                        quantities=Q_BGS,
-                        games=g_row,
-                        out_dir=base_dir,
-                        nfsp_checkpoint_path=nfsp_checkpoint_path,
-                        rnad_checkpoint_path=rnad_checkpoint_path,
-                    )
-                else:
-                    sim = _simulate_pair(
-                        ai,
-                        aj,
-                        params,
-                        g_row,
-                        base_dir,
-                        pair_key,
-                        remote_agents=remote_agent_urls,
-                        remote_agent_circles=remote_circle_map,
-                        debug=debug,
-                    )
-                results[pair_key] = sim
-                experiments.append(pair_key)
-                if debug:
-                    print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
-                if (not (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower()))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
-                    try:
-                        run_pyspiel_pair(
-                            pair_key=pair_key,
-                            agent_row=ai,
-                            agent_col=aj,
-                            discount=discount,
-                            max_rounds=max_rounds,
-                            num_items=num_items,
-                            quantities=Q_BGS,
-                            games=min(pyspiel_dump_games, g_row),
-                            out_dir=base_dir,
-                        )
-                    except Exception as e:
-                        if debug:
-                            print(f"[DEBUG] pyspiel dump failed for {pair_key}: {e}")
-
+                work.append((f"{ai}__vs__{aj}", ai, aj, g_row))
             if g_col > 0:
-                pair_key_rev = f"{aj}__vs__{ai}"
-                if (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower())):
-                    if not (meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded")):
-                        raise RuntimeError(f"NFSP requested for {pair_key_rev} but OpenSpiel negotiation game unavailable.")
-                    sim_rev = run_pyspiel_pair_nfsp_with_traces(
-                        pair_key=pair_key_rev,
-                        agent_row=aj,
-                        agent_col=ai,
-                        discount=discount,
-                        max_rounds=max_rounds,
-                        num_items=num_items,
-                        quantities=Q_BGS,
-                        games=g_col,
-                        out_dir=base_dir,
-                        nfsp_checkpoint_path=nfsp_checkpoint_path,
-                        rnad_checkpoint_path=rnad_checkpoint_path,
-                    )
-                else:
-                    sim_rev = _simulate_pair(
-                        aj,
-                        ai,
-                        params,
-                        g_col,
-                        base_dir,
-                        pair_key_rev,
-                        remote_agents=remote_agent_urls,
-                        remote_agent_circles=remote_circle_map,
-                        debug=debug,
-                    )
-                results[pair_key_rev] = sim_rev
-                experiments.append(pair_key_rev)
-                if debug:
-                    print(f"Simulated {pair_key_rev}: {sim_rev['row_mean_payoff']:.1f} / {sim_rev['col_mean_payoff']:.1f}")
-                if (not (("nfsp" in ai.lower()) or ("nfsp" in aj.lower()) or ("rnad" in ai.lower()) or ("rnad" in aj.lower()))) and meta.get("pyspiel", {}).get("enabled") and meta.get("pyspiel", {}).get("loaded") and pyspiel_dump_games > 0:
-                    try:
-                        run_pyspiel_pair(
-                            pair_key=pair_key_rev,
-                            agent_row=aj,
-                            agent_col=ai,
-                            discount=discount,
-                            max_rounds=max_rounds,
-                            num_items=num_items,
-                            quantities=Q_BGS,
-                            games=min(pyspiel_dump_games, g_col),
-                            out_dir=base_dir,
-                        )
-                    except Exception as e:
-                        if debug:
-                            print(f"[DEBUG] pyspiel dump failed for {pair_key_rev}: {e}")
+                work.append((f"{aj}__vs__{ai}", aj, ai, g_col))
+
+    # Decide concurrency
+    if parallel:
+        max_workers = parallel if isinstance(parallel, int) and parallel > 0 else None
+    else:
+        max_workers = 1
+
+    def _run_pair(item: Tuple[str, str, str, int]) -> Tuple[str, Dict[str, Any]]:
+        pair_key, row_agent, col_agent, g = item
+        sim = run_pyspiel_pair_nfsp_with_traces(
+            pair_key=pair_key,
+            agent_row=row_agent,
+            agent_col=col_agent,
+            discount=discount,
+            max_rounds=max_rounds,
+            num_items=num_items,
+            quantities=Q_BGS,
+            games=g,
+            out_dir=base_dir,
+            nfsp_checkpoint_path=nfsp_checkpoint_path,
+            rnad_checkpoint_path=rnad_checkpoint_path,
+            remote_agents=remote_agent_urls,
+            remote_agent_circles=remote_circle_map,
+        )
+        return pair_key, sim
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_run_pair, item) for item in work]
+        for fut in concurrent.futures.as_completed(futures):
+            pair_key, sim = fut.result()
+            results[pair_key] = sim
+            experiments.append(pair_key)
+            if debug:
+                print(f"Simulated {pair_key}: {sim['row_mean_payoff']:.1f} / {sim['col_mean_payoff']:.1f}")
 
     (base_dir / "payoffs.json").write_text(json.dumps(results, indent=2))
     return {"base_dir": str(base_dir), "experiments": experiments}

@@ -20,6 +20,9 @@ from a2a.types import (
 	TextPart,
 	Task,
 	UnsupportedOperationError,
+	AgentCard,
+	AgentCapabilities,
+	AgentSkill,
 )
 from a2a.utils import (
 	new_agent_text_message,
@@ -32,13 +35,26 @@ import uvicorn
 
 from scenarios.bargaining.bargaining_env.reasoning_trace import ReasoningTracer
 
-def minimal_agent_card(name: str, url: str) -> dict[str, Any]:
-	return {
-		"name": name,
-		"version": "0.1.0",
-		"description": "LLM Agent for bargaining decisions",
-		"endpoints": [{"type": "http", "url": url}],
-	}
+def minimal_agent_card(name: str, url: str) -> AgentCard:
+	skill = AgentSkill(
+		id="bargaining_llm",
+		name="Bargaining negotiation",
+		description="Negotiate divisions of items via text",
+		tags=["bargaining", "negotiation"],
+		examples=[],
+	)
+	return AgentCard(
+		name=name,
+		version="0.1.0",
+		description="LLM Agent for bargaining decisions",
+		url=url,
+		preferred_transport="JSONRPC",
+		protocol_version="0.3.0",
+		default_input_modes=["text"],
+		default_output_modes=["text"],
+		capabilities=AgentCapabilities(streaming=True),
+		skills=[skill],
+	)
 
 
 def load_custom_decider(module_path: Optional[str]) -> Optional[Callable[[str, Optional[list[str]]], str]]:
@@ -81,8 +97,8 @@ class LLMAgent(AgentExecutor):
 		self._api_key = api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 		self._base_url = base_url
 		self._headers = headers or {}
-		self._temperature = float(temperature)
-		self._top_p = top_p
+		self._temperature = float(temperature) if temperature is not None else None
+		self._top_p = float(top_p) if top_p is not None else None
 		self._timeout = int(timeout)
 		# Lazy clients (created on first use)
 		self._gemini_client = None
@@ -161,13 +177,15 @@ class LLMAgent(AgentExecutor):
 		if provider == "gemini":
 			if self._gemini_client is None:
 				self._gemini_client = genai.Client()
+			config_kwargs = {
+				"system_instruction": sys_inst,
+				"response_mime_type": "text/plain",
+			}
+			if self._temperature is not None:
+				config_kwargs["temperature"] = self._temperature
 			resp = self._gemini_client.models.generate_content(
 				model=self._model,
-				config=genai.types.GenerateContentConfig(
-					system_instruction=sys_inst,
-					response_mime_type="text/plain",
-					temperature=self._temperature,
-				),
+				config=genai.types.GenerateContentConfig(**config_kwargs),
 				contents=prompt,
 			)
 			text = resp.text or ""
@@ -180,16 +198,20 @@ class LLMAgent(AgentExecutor):
 				raise RuntimeError(f"openai package not available: {e}")
 			if self._openai_client is None:
 				self._openai_client = OpenAI(api_key=self._api_key)
-			resp = self._openai_client.chat.completions.create(
-				model=self._model,
-				messages=(
+			is_o3 = self._model.lower().startswith("o3-")
+			create_kwargs = {
+				"model": self._model,
+				"messages": (
 					([{"role": "system", "content": sys_inst}] if sys_inst else []) +
 					[{"role": "user", "content": prompt}]
 				),
-				temperature=self._temperature,
-				top_p=self._top_p,
-				timeout=self._timeout,
-			)
+				"timeout": self._timeout,
+			}
+			if (not is_o3) and self._temperature is not None:
+				create_kwargs["temperature"] = self._temperature
+			if (not is_o3) and self._top_p is not None:
+				create_kwargs["top_p"] = self._top_p
+			resp = self._openai_client.chat.completions.create(**create_kwargs)
 			text = (resp.choices[0].message.content or "").strip()
 			return text, text
 		# Anthropic
@@ -203,7 +225,7 @@ class LLMAgent(AgentExecutor):
 			msg = self._anthropic_client.messages.create(
 				model=self._model,
 				max_tokens=2048,
-				temperature=self._temperature,
+				temperature=self._temperature if self._temperature is not None else 0.0,
 				system=sys_inst if sys_inst else None,
 				messages=[{"role": "user", "content": prompt}],
 			)
@@ -232,8 +254,9 @@ class LLMAgent(AgentExecutor):
 					([{"role": "system", "content": sys_inst}] if sys_inst else []) +
 					[{"role": "user", "content": prompt}]
 				),
-				"temperature": self._temperature,
 			}
+			if self._temperature is not None:
+				payload["temperature"] = self._temperature
 			r = requests.post(url, headers=headers, json=payload, timeout=self._timeout)
 			r.raise_for_status()
 			data = r.json()
@@ -288,7 +311,7 @@ def main():
 	parser.add_argument("--api-key", type=str, default=os.environ.get("LLM_API_KEY"))
 	parser.add_argument("--base-url", type=str, help="Base URL for provider (for openai_compat/http)")
 	parser.add_argument("--headers-json", type=str, help="Path to JSON file with extra HTTP headers")
-	parser.add_argument("--temperature", type=float, default=float(os.environ.get("LLM_TEMPERATURE", "0.0")))
+	parser.add_argument("--temperature", type=float, default=None)
 	parser.add_argument("--top-p", type=float, default=None)
 	parser.add_argument("--timeout", type=int, default=int(os.environ.get("LLM_TIMEOUT", "60")))
 	args = parser.parse_args()

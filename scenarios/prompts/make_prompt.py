@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import numpy as np  # noqa: F401
 
-from utils.offer import Offer
-from prompts.prompt_texts.circle0 import make_prompt_circle_0
-from prompts.prompt_texts.circle1 import make_prompt_circle_1
-from prompts.prompt_texts.circle2 import make_prompt_circle_2
-from prompts.prompt_texts.circle3 import make_prompt_circle_3
-from prompts.prompt_texts.circle4 import make_prompt_circle_4
-from prompts.prompt_texts.circle5 import make_prompt_circle_5
-from prompts.prompt_texts.circle6 import make_prompt_circle_6
+from ..utils.offer import Offer
+from .prompt_texts.circle0 import make_prompt_circle_0
+from .prompt_texts.circle1 import make_prompt_circle_1
+from .prompt_texts.circle2 import make_prompt_circle_2
+from .prompt_texts.circle3 import make_prompt_circle_3
+from .prompt_texts.circle4 import make_prompt_circle_4
+from .prompt_texts.circle5 import make_prompt_circle_5
+from .prompt_texts.circle6 import make_prompt_circle_6
 
 
 def make_prompt(

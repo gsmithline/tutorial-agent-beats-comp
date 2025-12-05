@@ -12,6 +12,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import contextlib
+from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
 # Optional server dependencies; provide fallbacks for CLI 'once' mode
 HAVE_A2A = True
@@ -85,6 +86,8 @@ class BargainingGreenAgent(GreenAgent):
         circle = cfg.get("circle")
         if not full_matrix and (model is None or circle is None):
             return False, "When full_matrix is false, provide both 'model' and 'circle' in config."
+        if cfg.get("use_openspiel") is False:
+            return False, "OpenSpiel must be enabled for all bargaining runs."
         return True, "ok"
 
     async def run_eval(self, req: EvalRequest, updater: Any) -> None:
@@ -109,7 +112,8 @@ class BargainingGreenAgent(GreenAgent):
             "skip_existing": cfg.get("skip_existing", False),
             "force_new_dirs": cfg.get("force_new_dirs", False),
             "dry_run": cfg.get("dry_run", False),
-            "use_openspiel": cfg.get("use_openspiel", True),
+            # Always use OpenSpiel for bargaining.
+            "use_openspiel": True,
             "num_items": cfg.get("num_items", 3),
             "debug": cfg.get("debug", False),
         }
@@ -260,23 +264,32 @@ if __name__ == "__main__":
             args.card_url = None
             args.cloudflare_quick_tunnel = False
 
-        try:
-            from scenarios.debate.debate_judge_common import debate_judge_agent_card as _card  # reuse simple card builder
-        except Exception:
-            # Minimal agent card if debate module unavailable
-            def _card(name: str, url: str) -> Dict[str, Any]:
-                return {
-                    "name": name,
-                    "version": "0.1.0",
-                    "description": "Bargaining Green Agent",
-                    "endpoints": [{"type": "http", "url": url}],
-                }
+        # Always use a bargaining-specific minimal card
+        def _card(name: str, url: str) -> AgentCard:
+            skill = AgentSkill(
+                id="bargaining_assessor",
+                name="Bargaining meta-game assessment",
+                description="Runs bargaining simulations and meta-game analysis over provided participants.",
+                tags=["bargaining", "assessment"],
+                examples=None,
+            )
+            return AgentCard(
+                name=name,
+                version="0.1.0",
+                description="Bargaining Green Agent",
+                url=url,
+                preferred_transport="JSONRPC",
+                protocol_version="0.3.0",
+                default_input_modes=["text"],
+                default_output_modes=["text"],
+                capabilities=AgentCapabilities(streaming=True),
+                skills=[skill],
+            )
 
         if args.cloudflare_quick_tunnel:
             from agentbeats.cloudflare import quick_tunnel
             agent_url_cm = quick_tunnel(f"http://{args.host}:{args.port}")
         else:
-            from a2a.utils import strip_trailing_slash
             base_url = f"http://{args.host}:{args.port}/"
             agent_url_cm = contextlib.nullcontext(args.card_url or base_url)
 

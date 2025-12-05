@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .pyspiel_integration import try_load_pyspiel_game, build_negotiation_params
 from .agents.nfsp import NFSPAgentWrapper
 from .agents.rnad import RNaDAgentWrapper
+from .agents.remote import RemoteNegotiator
 
 # Simple, dependency-light OpenSpiel runner for reference data dumps.
 # Only engages when pyspiel is available and explicitly requested.
@@ -265,6 +266,8 @@ def run_pyspiel_pair_nfsp_with_traces(
     out_dir: Path,
     nfsp_checkpoint_path: Optional[str],
     rnad_checkpoint_path: Optional[str],
+    remote_agents: Optional[Dict[str, str]] = None,
+    remote_agent_circles: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """
     Run OpenSpiel negotiation games where at least one agent is NFSP or RNAD.
@@ -288,6 +291,33 @@ def run_pyspiel_pair_nfsp_with_traces(
     traces_dir.mkdir(parents=True, exist_ok=True)
     trace_file = traces_dir / f"{pair_key}.jsonl"
 
+    remote_map: Dict[str, str] = {str(k): str(v) for k, v in (remote_agents or {}).items()}
+    remote_circles: Dict[str, int] = {}
+    for k, v in (remote_agent_circles or {}).items():
+        try:
+            remote_circles[str(k)] = int(v)
+        except Exception:
+            continue
+
+    def _allocations_from_keep(keep: List[int], proposer: str) -> Tuple[List[int], List[int]]:
+        # keep is items proposer keeps; other gets remainder
+        other = [quantities[i] - keep[i] for i in range(len(quantities))]
+        if proposer == "row":
+            return keep, other
+        return other, keep
+
+    def _find_action_for_keep(actions: List[Tuple[int, str]], keep_vec: List[int]) -> Optional[int]:
+        for a, s in actions:
+            parsed = _parse_keep_vector(s)
+            if parsed is None:
+                continue
+            try:
+                if all(int(parsed[i]) == int(keep_vec[i]) for i in range(len(keep_vec))):
+                    return a
+            except Exception:
+                continue
+        return None
+
     # Aggregates
     n_accept = 0
     n_ef1 = 0
@@ -306,6 +336,10 @@ def run_pyspiel_pair_nfsp_with_traces(
         nfsp_col = NFSPAgentWrapper(game, 1, checkpoint_path=nfsp_checkpoint_path, discount=discount, max_rounds=max_rounds) if is_col_nfsp else None
         rnad_row = RNaDAgentWrapper(game, 0, checkpoint_path=rnad_checkpoint_path) if is_row_rnad else None
         rnad_col = RNaDAgentWrapper(game, 1, checkpoint_path=rnad_checkpoint_path) if is_col_rnad else None
+        is_row_remote = agent_row in remote_map
+        is_col_remote = agent_col in remote_map
+        remote_row = RemoteNegotiator(label=agent_row, endpoint=remote_map[agent_row], prompt_circle=remote_circles.get(agent_row)) if is_row_remote else None
+        remote_col = RemoteNegotiator(label=agent_col, endpoint=remote_map[agent_col], prompt_circle=remote_circles.get(agent_col)) if is_col_remote else None
 
         # Capture valuations/BATNAs from observations (best-effort) once at first decision node
         v1 = v2 = [0, 0, 0]
@@ -337,10 +371,83 @@ def run_pyspiel_pair_nfsp_with_traces(
                 except Exception:
                     pass
                 captured_info = True
+                # Initialize remote contexts once valuations are known
+                if remote_row is not None:
+                    remote_row.set_context(
+                        pair_key=pair_key,
+                        game_index=gi,
+                        role="row",
+                        valuations_self=v1,
+                        valuations_opp=v2,
+                        batna_self=b1,
+                        batna_opp=b2,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        quantities=quantities,
+                        value_cap=100,
+                    )
+                if remote_col is not None:
+                    remote_col.set_context(
+                        pair_key=pair_key,
+                        game_index=gi,
+                        role="col",
+                        valuations_self=v2,
+                        valuations_opp=v1,
+                        batna_self=b2,
+                        batna_opp=b1,
+                        discount=discount,
+                        max_rounds=max_rounds,
+                        quantities=quantities,
+                        value_cap=100,
+                    )
 
             cur = state.current_player()
             if cur == 0:
-                if is_row_nfsp and nfsp_row is not None:
+                if is_row_remote and remote_row is not None:
+                    actions = _list_actions(state)
+                    remote_row.set_round(round_idx)
+                    walk_action = _find_walk_action(actions)
+                    choose_walk = False
+                    if last_keep_from_col:
+                        alloc_self, alloc_other = _allocations_from_keep(last_keep_from_col, "col")
+                        remote_row.set_offer_context(
+                            proposer="col",
+                            offer_allocation_self=alloc_self,
+                            offer_allocation_other=alloc_other,
+                            round_index=round_idx,
+                        )
+                    a_acc = _find_accept_action(actions)
+                    chosen_accept = False
+                    if a_acc is not None and last_keep_from_col is not None:
+                        alloc_self, _ = _allocations_from_keep(last_keep_from_col, "col")
+                        offer_value = _value(v1, alloc_self)
+                        batna_value = b1
+                        counter_value = batna_value
+                        try:
+                            if remote_row.accepts(offer_value, batna_value, counter_value):
+                                a = a_acc
+                                chosen_accept = True
+                        except Exception:
+                            chosen_accept = False
+                    if not chosen_accept:
+                        try:
+                            alloc_self, alloc_other = remote_row.propose(quantities, "row", v1, v2)
+                            keep_vec = [int(x) for x in alloc_self]
+                            a_keep = _find_action_for_keep(actions, keep_vec)
+                            if a_keep is None:
+                                choices = _non_terminal_actions(actions)
+                                a = choices[0] if choices else (actions[0][0] if actions else 0)
+                            else:
+                                a = a_keep
+                        except Exception:
+                            choose_walk = True
+                            if walk_action is not None:
+                                a = walk_action
+                            else:
+                                a = actions[0][0] if actions else 0
+                    if chosen_accept and walk_action is not None and 'walk' in (a_str := state.action_to_string(cur, a) if 'a' in locals() else ''):
+                        pass
+                elif is_row_nfsp and nfsp_row is not None:
                     a = nfsp_row.step(state)
                 elif is_row_rnad and rnad_row is not None:
                     a = rnad_row.step(state)
@@ -352,7 +459,49 @@ def run_pyspiel_pair_nfsp_with_traces(
                     else:
                         a = _soft_step(state)
             else:
-                if is_col_nfsp and nfsp_col is not None:
+                if is_col_remote and remote_col is not None:
+                    actions = _list_actions(state)
+                    remote_col.set_round(round_idx)
+                    walk_action = _find_walk_action(actions)
+                    choose_walk = False
+                    if last_keep_from_row:
+                        alloc_self, alloc_other = _allocations_from_keep(last_keep_from_row, "row")
+                        remote_col.set_offer_context(
+                            proposer="row",
+                            offer_allocation_self=alloc_self,
+                            offer_allocation_other=alloc_other,
+                            round_index=round_idx,
+                        )
+                    a_acc = _find_accept_action(actions)
+                    chosen_accept = False
+                    if a_acc is not None and last_keep_from_row is not None:
+                        alloc_self, _ = _allocations_from_keep(last_keep_from_row, "row")
+                        offer_value = _value(v2, alloc_self)
+                        batna_value = b2
+                        counter_value = batna_value
+                        try:
+                            if remote_col.accepts(offer_value, batna_value, counter_value):
+                                a = a_acc
+                                chosen_accept = True
+                        except Exception:
+                            chosen_accept = False
+                    if not chosen_accept:
+                        try:
+                            alloc_self, alloc_other = remote_col.propose(quantities, "col", v2, v1)
+                            keep_vec = [int(x) for x in alloc_self]
+                            a_keep = _find_action_for_keep(actions, keep_vec)
+                            if a_keep is None:
+                                choices = _non_terminal_actions(actions)
+                                a = choices[0] if choices else (actions[0][0] if actions else 0)
+                            else:
+                                a = a_keep
+                        except Exception:
+                            choose_walk = True
+                            if walk_action is not None:
+                                a = walk_action
+                            else:
+                                a = actions[0][0] if actions else 0
+                elif is_col_nfsp and nfsp_col is not None:
                     a = nfsp_col.step(state)
                 elif is_col_rnad and rnad_col is not None:
                     a = rnad_col.step(state)

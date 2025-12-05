@@ -139,13 +139,23 @@ class RemoteNegotiator(BaseNegotiator):
 			action="PROPOSE",
 			observation=observation,
 			instruction=(
-				"Return JSON like "
-				'{"allocation_self":[...],"allocation_other":[...],"reason":"..."}.\n'
-				"You may instead set `choice_id` to select from the allocation catalog."
+				"Return ONLY JSON. Preferred: "
+				'{"allocation_self":[...],"allocation_other":[...],"reason":"..."} '
+				"or use the catalog: {\"choice_id\": <int>, \"reason\": \"...\"}.\n"
+				"No extra text. Arrays must sum to quantities. If you omit allocation_other, it will be inferred as the complement."
 			),
 			options=options,
 		)
 		response = self._send(prompt)
+		# Support action-based responses from circle prompts: COUNTEROFFER with "offer" field
+		if "action" in response and isinstance(response.get("action"), str):
+			act = response.get("action", "").strip().upper()
+			if act in ("COUNTEROFFER", "COUNTER_OFFER", "OFFER"):
+				offer = response.get("offer") or response.get("allocation_self")
+				if offer is not None:
+					response = dict(response)
+					response.setdefault("allocation_self", offer)
+			# ACCEPT/WALK here fall back to normal parsing; invalid allocation will be handled below.
 		allocation_self, allocation_other = self._extract_allocation(response, quantities, options)
 		return allocation_self, allocation_other
 
@@ -162,13 +172,27 @@ class RemoteNegotiator(BaseNegotiator):
 			action="ACCEPT_OR_REJECT",
 			observation=observation,
 			instruction=(
-				"Respond with JSON like "
-				'{"accept": true, "reason": "...", "plan_allocation": [..optional..]}.\n'
-				"Set `accept` to true to accept the current offer; false to continue bargaining."
+				"Return ONLY JSON: "
+				'{"accept": true|false, "reason": "...", "plan_allocation": [..optional..]}.\n'
+				'Actions are ACCEPT (accept=true) or COUNTER_OFFER/WALK (accept=false). No extra text.'
 			),
 		)
 		response = self._send(prompt)
-		decision = response.get("accept", response.get("decision"))
+		# Support action-based responses (ACCEPT/COUNTEROFFER/WALK) from circle prompts
+		if "accept" in response:
+			decision = response.get("accept")
+		elif "decision" in response:
+			decision = response.get("decision")
+		elif "action" in response:
+			act = str(response.get("action", "")).strip().lower()
+			if act == "accept":
+				decision = True
+			elif act in ("counteroffer", "counter_offer", "offer", "walk"):
+				decision = False
+			else:
+				decision = None
+		else:
+			decision = None
 		if decision is None:
 			raise RemoteNegotiatorError(f"{self._label} response missing 'accept' field: {response}")
 		return self._coerce_bool(decision)
@@ -190,6 +214,9 @@ class RemoteNegotiator(BaseNegotiator):
 			data["pending_offer"] = self._pending_offer
 		if extra:
 			data.update(extra)
+		# Do not leak opponent private info to the remote agent
+		for k in ["valuations_opp", "batna_opp", "p2_outside_offer"]:
+			data.pop(k, None)
 		return data
 
 	def _format_prompt(
@@ -201,13 +228,17 @@ class RemoteNegotiator(BaseNegotiator):
 		options: List[Dict[str, Any]] | None = None,
 	) -> str:
 		circle_prompt = self._build_circle_prompt()
+		# Do not leak opponent-private info in the rendered prompt
+		obs_public = dict(observation)
+		for k in ("valuations_opp", "batna_opp", "p2_outside_offer"):
+			obs_public.pop(k, None)
 		message = (
 			f"You are participating in the AgentBeats bargaining meta-game as '{self._label}'.\n"
 			f"Action: {action}.\n"
 			f"{instruction}\n"
 			"Always answer with valid JSON only.\n"
 			"Observation:\n"
-			f"```json\n{json.dumps(observation, indent=2)}\n```"
+			f"```json\n{json.dumps(obs_public, indent=2)}\n```"
 		)
 		if options:
 			message += (
@@ -219,6 +250,7 @@ class RemoteNegotiator(BaseNegotiator):
 		return message
 
 	def _build_circle_prompt(self) -> str | None:
+		# Build a circle prompt without leaking opponent-private info.
 		if self._prompt_circle is None or not self._context:
 			return None
 		try:
@@ -230,8 +262,9 @@ class RemoteNegotiator(BaseNegotiator):
 				quantities=quantities,
 				V=value_cap,
 				values=values,
-				W1=int(self._context.get("batna_player1", 0)),
-				W2=int(self._context.get("batna_player2", 0)),
+				W1=int(self._context.get("batna_self", 0)), #doesnt matter
+				# Do not expose opponent BATNA; provide a neutral placeholder
+				W2=0, #doesnt matter
 				w=int(self._context.get("batna_self", 0)),
 				R=int(self._context.get("max_rounds", 2)),
 				g=float(self._context.get("discount", 0.98)),
@@ -240,10 +273,9 @@ class RemoteNegotiator(BaseNegotiator):
 				current_offer=self._current_offer,
 				player_num=int(self._context.get("player_index", 0)),
 				p1_outside_offer=self._context.get("p1_outside_offer"),
+				# Do not expose opponent outside offer; use a neutral placeholder
 				p2_outside_offer=self._context.get("p2_outside_offer"),
 				circle=int(self._prompt_circle),
-				other_player_num=int(self._context.get("other_player_num", 2)),
-				my_player_num=int(self._context.get("my_player_num", 1)),
 				example_offer_less_than_outside_offer_self=self._context.get("example_offer"),
 			)
 			return prompt_text.strip()
