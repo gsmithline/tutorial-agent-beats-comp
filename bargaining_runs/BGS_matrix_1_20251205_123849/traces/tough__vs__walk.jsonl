@@ -1,5 +1,0 @@
-{"pair": "tough__vs__walk", "game": 0, "accepted": true, "round": 1, "q": [7, 4, 1], "v1": [6, 50, 66], "v2": [74, 60, 12], "b1": 264.0, "b2": 626.0, "a1": [6, 4, 1], "a2": [1, 0, 0], "payoff1": 302.0, "payoff2": 74.0, "ef1": false}
-{"pair": "tough__vs__walk", "game": 1, "accepted": true, "round": 1, "q": [7, 4, 1], "v1": [52, 19, 90], "v2": [46, 15, 35], "b1": 136.0, "b2": 304.0, "a1": [6, 4, 1], "a2": [1, 0, 0], "payoff1": 478.0, "payoff2": 46.0, "ef1": false}
-{"pair": "tough__vs__walk", "game": 2, "accepted": true, "round": 1, "q": [7, 4, 1], "v1": [46, 32, 97], "v2": [4, 44, 61], "b1": 25.0, "b2": 127.0, "a1": [6, 4, 1], "a2": [1, 0, 0], "payoff1": 501.0, "payoff2": 4.0, "ef1": false}
-{"pair": "tough__vs__walk", "game": 3, "accepted": true, "round": 1, "q": [7, 4, 1], "v1": [15, 1, 56], "v2": [39, 82, 33], "b1": 53.0, "b2": 258.0, "a1": [6, 4, 1], "a2": [1, 0, 0], "payoff1": 150.0, "payoff2": 39.0, "ef1": false}
-{"pair": "tough__vs__walk", "game": 4, "accepted": true, "round": 1, "q": [7, 4, 1], "v1": [91, 57, 29], "v2": [43, 73, 28], "b1": 39.0, "b2": 513.0, "a1": [6, 4, 1], "a2": [1, 0, 0], "payoff1": 803.0, "payoff2": 43.0, "ef1": false}

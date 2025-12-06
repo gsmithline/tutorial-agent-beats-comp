@@ -747,21 +747,21 @@ def run_matrix_pipeline(
                 "col_mean_payoff": base["col_mean_payoff"],
             }
         else:
-            sim = run_pyspiel_pair_nfsp_with_traces(
-                pair_key=pair_key,
-                agent_row=row_agent,
-                agent_col=col_agent,
-                discount=discount,
-                max_rounds=max_rounds,
-                num_items=num_items,
-                quantities=Q_BGS,
-                games=g,
-                out_dir=base_dir,
-                nfsp_checkpoint_path=nfsp_checkpoint_path,
-                rnad_checkpoint_path=rnad_checkpoint_path,
-                remote_agents=remote_agent_urls,
-                remote_agent_circles=remote_circle_map,
-            )
+        sim = run_pyspiel_pair_nfsp_with_traces(
+            pair_key=pair_key,
+            agent_row=row_agent,
+            agent_col=col_agent,
+            discount=discount,
+            max_rounds=max_rounds,
+            num_items=num_items,
+            quantities=Q_BGS,
+            games=g,
+            out_dir=base_dir,
+            nfsp_checkpoint_path=nfsp_checkpoint_path,
+            rnad_checkpoint_path=rnad_checkpoint_path,
+            remote_agents=remote_agent_urls,
+            remote_agent_circles=remote_circle_map,
+        )
         return pair_key, sim
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:

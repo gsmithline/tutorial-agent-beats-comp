@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
-import sys
-import pickle
 import importlib
+import os
+import pickle
+import sys
 import traceback
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -13,6 +13,45 @@ try:
 	import pyspiel  # type: ignore
 except Exception:
 	pyspiel = None  # type: ignore
+
+# Attempt to import the original RNAD module; if missing, provide a fallback
+# that still allows checkpoints to unpickle. Preferred path is the provided
+# checkpoints repo: scenarios/bargaining/rl_agent_checkpoints/rnad/rnad.py
+RNaDSolver = None  # type: ignore[var-annotated]
+if RNaDSolver is None:
+	try:
+		_rnad_mod = importlib.import_module("scenarios.bargaining.rl_agent_checkpoints.rnad.rnad")
+		sys.modules.setdefault("rnad", _rnad_mod)
+		RNaDSolver = _rnad_mod.RNaDSolver  # type: ignore[attr-defined]
+	except Exception:
+		pass
+if RNaDSolver is None:
+	try:
+		_rnad_mod = importlib.import_module("agents.rnad_working.rnad")
+		sys.modules.setdefault("rnad", _rnad_mod)
+		RNaDSolver = _rnad_mod.RNaDSolver  # type: ignore[attr-defined]
+	except Exception:
+		pass
+if RNaDSolver is None:
+	class RNaDSolver:  # type: ignore
+		def __init__(self, *args, **kwargs):
+			self._fallback_warned = False
+
+		def __setstate__(self, state):
+			self.__dict__.update(state)
+
+		def action_probabilities(self, state) -> Dict[int, float]:
+			try:
+				legal = list(state.legal_actions())
+			except Exception:
+				legal = []
+			if not legal:
+				return {}
+			if not self._fallback_warned:
+				print("[RNAD fallback] rnad module missing; using uniform policy.")
+				self._fallback_warned = True
+			p = 1.0 / len(legal)
+			return {int(a): p for a in legal}
 
 
 class RNaDAgentWrapper:
@@ -51,18 +90,12 @@ class RNaDAgentWrapper:
 		self.last_action = None
 		self.last_prob = None
 
-		# Try to make RNAD module importable if provided in repo (best-effort)
-		try:
-			_ = importlib.import_module("agents.rnad_working.rnad")
-		except Exception:
-			pass
-
 		if not os.path.exists(checkpoint_path):
 			raise FileNotFoundError(f"RNAD checkpoint not found: {checkpoint_path}")
 		if self.debug:
 			print(f"[RNAD P{self.player_id}] loading: {checkpoint_path}")
 		with open(checkpoint_path, "rb") as f:
-			self._solver = pickle.load(f)
+			self._solver: RNaDSolver = pickle.load(f)  # type: ignore[assignment]
 		if self.debug:
 			cfg = getattr(self._solver, "config", None)
 			if cfg is not None:

@@ -339,6 +339,20 @@ class RemoteNegotiator(BaseNegotiator):
 					return data
 			except json.JSONDecodeError:
 				continue
+		# Heuristic fallbacks for plain-text replies
+		pl = payload.strip().lower()
+		if pl in {"accept", "accepted", "yes"}:
+			return {"accept": True, "reason": "parsed from plain text"}
+		if any(k in pl for k in ["walk", "reject", "decline", "decision complete"]):
+			return {"accept": False, "action": "WALK", "reason": "parsed from plain text"}
+		# Heuristic: bare list counteroffers like "[5,2,1]" -> allocation_self
+		if payload.strip().startswith("[") and payload.strip().endswith("]"):
+			try:
+				arr = json.loads(payload)
+				if isinstance(arr, list):
+					return {"allocation_self": arr, "reason": "parsed from bare list"}
+			except Exception:
+				pass
 		raise RemoteNegotiatorError(f"{self._label} returned non-JSON response: {payload[:200]}")
 
 	def _extract_allocation(
