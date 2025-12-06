@@ -173,7 +173,7 @@ class BargainingGreenAgent(GreenAgent):
             "output_dir": output_dir,
             "discount_factor": cfg.get("discount", 0.98),
             "num_bootstrap": cfg.get("bootstrap", 100),
-            "norm_constants": cfg.get("norm_constants", {}),
+            "norm_constants": cfg.get("norm_constants", {"UW": 805.9, "NW": 378.7, "NWA": 81.7}),
             "random_seed": cfg.get("random_seed", 42),
         }
 

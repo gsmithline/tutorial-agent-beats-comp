@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import concurrent.futures
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .agents.soft import SoftNegotiator
@@ -440,6 +441,33 @@ def run_matrix_pipeline(
     assert num_items == 3, "This lightweight pipeline only supports BGS (3 items)."
     tag = date or _now_tag()
     base_dir = _ensure_dir(Path("bargaining_runs") / f"BGS_matrix_{matrix_id}_{tag}")
+
+    # Default RL checkpoints based on game spec
+    def _checkpoint_key(max_rounds: int, discount: float) -> str | None:
+        if max_rounds == 3 and abs(discount - 0.9) < 1e-6:
+            return "bg4"
+        if max_rounds == 3 and abs(discount - 0.98) < 1e-6:
+            return "bg5"
+        if max_rounds == 5 and abs(discount - 0.98) < 1e-6:
+            return "bg6"
+        return None
+
+    ckpt_key = _checkpoint_key(max_rounds, discount)
+    rl_root = Path(__file__).resolve().parent.parent / "rl_agent_checkpoints"
+    nfsp_map = {
+        "bg4": rl_root / "nfsp" / "nfsp_bg4.pt",
+        "bg5": rl_root / "nfsp" / "nfsp_ng5.pt",  # assuming ng5 corresponds to BG5
+        "bg6": rl_root / "nfsp" / "nfsp_bg6.pt",
+    }
+    rnad_map = {
+        "bg4": rl_root / "rnad" / "rnad_bg4.pkl",
+        "bg5": rl_root / "rnad" / "rnad_bg5.pkl",
+        "bg6": rl_root / "rnad" / "rnad_bg6.pkl",
+    }
+    if nfsp_checkpoint_path is None and ckpt_key and ckpt_key in nfsp_map and nfsp_map[ckpt_key].exists():
+        nfsp_checkpoint_path = str(nfsp_map[ckpt_key])
+    if rnad_checkpoint_path is None and ckpt_key and ckpt_key in rnad_map and rnad_map[ckpt_key].exists():
+        rnad_checkpoint_path = str(rnad_map[ckpt_key])
 
     remote_agent_map: Dict[str, str] = {str(k): str(v) for k, v in (remote_agents or {}).items()}
     if challenger_label and challenger_url:
