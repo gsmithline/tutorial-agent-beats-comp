@@ -319,7 +319,9 @@ class RemoteNegotiator(BaseNegotiator):
 				last_exc = exc
 				self._conversation_started = False
 				logger.warning("Remote negotiator %s attempt %d failed: %s", self._label, attempt + 1, exc)
-		raise RemoteNegotiatorError(f"{self._label} did not respond with valid JSON: {last_exc}")
+		# Fallback: treat as WALK to avoid stalling meta-game when remote emits non-JSON
+		logger.warning("Remote negotiator %s exhausted retries; defaulting to WALK.", self._label)
+		return {"action": "WALK", "reason": f"defaulted after non-JSON: {last_exc}"}
 
 	def _parse_json(self, payload: str) -> Dict[str, Any]:
 		candidates = []

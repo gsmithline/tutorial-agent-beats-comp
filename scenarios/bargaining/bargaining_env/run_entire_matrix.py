@@ -22,8 +22,13 @@ from .pyspiel_runner import run_pyspiel_pair, run_pyspiel_pair_nfsp_with_traces
 # BGS parameters (small game): fixed items
 Q_BGS: Tuple[int, int, int] = (7, 4, 1)  # quantities per item type
 V_MAX_DEFAULT: int = 100
+WALK_BASELINE_GAMES: int = 300_000
+WALK_BASELINE_SEED: int = 42
 
 logger = logging.getLogger(__name__)
+
+# Cache for synthetic walk traces so we only generate once per run
+_WALK_BASELINE_CACHE: Dict[Tuple[Path, float, Tuple[int, int, int], int, int], Dict[str, Any]] = {}
 
 
 @dataclass
@@ -138,6 +143,72 @@ def _is_ef1(v: List[int], a_self: List[int], a_other: List[int]) -> bool:
         if a_other[k] > 0:
             max_item = max(max_item, v[k])
     return (other_val - self_val) <= max_item
+
+
+def _ensure_walk_baseline(
+    *,
+    base_dir: Path,
+    discount: float,
+    quantities: Tuple[int, int, int],
+    v_max: int = V_MAX_DEFAULT,
+    games: int = WALK_BASELINE_GAMES,
+    rng_seed: int = WALK_BASELINE_SEED,
+) -> Dict[str, Any]:
+    """
+    Deterministically synthesize walk-vs-anyone traces/payoffs once and reuse.
+    Walk agent always walks in round 1; both players receive their BATNAs (no discount).
+    """
+    key = (Path(base_dir).resolve(), float(discount), quantities, int(v_max), int(games))
+    if key in _WALK_BASELINE_CACHE:
+        return _WALK_BASELINE_CACHE[key]
+
+    rand = random.Random(rng_seed)
+    traces_dir = _ensure_dir(base_dir / "traces")
+    trace_file = traces_dir / "walk_baseline.jsonl"
+    # Always regenerate to ensure correct game count/params
+    if trace_file.exists():
+        trace_file.unlink()
+
+    sum_row = 0.0
+    sum_col = 0.0
+    accept_rate = 0.0
+
+    with trace_file.open("w") as f:
+        for gi in range(games):
+            v1 = [rand.randint(1, v_max) for _ in range(3)]
+            v2 = [rand.randint(1, v_max) for _ in range(3)]
+            b1 = rand.randint(1, _dot(v1, quantities))
+            b2 = rand.randint(1, _dot(v2, quantities))
+            rec = {
+                "pair": "walk_baseline",
+                "game": gi,
+                "accepted": False,
+                "round": 1,
+                "q": list(quantities),
+                "v1": v1,
+                "v2": v2,
+                "b1": float(b1),
+                "b2": float(b2),
+                "a1": [0, 0, 0],
+                "a2": [0, 0, 0],
+                "payoff1": float(b1),  # round 1 -> no discount
+                "payoff2": float(b2),
+                "ef1": None,
+            }
+            f.write(json.dumps(rec) + "\n")
+            sum_row += float(b1)
+            sum_col += float(b2)
+
+    result = {
+        "pair": "walk_baseline",
+        "trace_file": str(trace_file),
+        "accept_rate": accept_rate,
+        "ef1_rate": 0.0,
+        "row_mean_payoff": sum_row / max(1, games),
+        "col_mean_payoff": sum_col / max(1, games),
+    }
+    _WALK_BASELINE_CACHE[key] = result
+    return result
 
 
 def _simulate_pair(
@@ -490,6 +561,16 @@ def run_matrix_pipeline(
             agents = ["soft", "tough", "aspiration", "walk"]
         else:
             agents = [str(a) for a in model_circles]
+        # Only include RL baselines when we're in a supported bg4/bg5/bg6 config
+        if ckpt_key in {"bg4", "bg5", "bg6"}:
+            available_rl: List[str] = []
+            if nfsp_checkpoint_path and Path(nfsp_checkpoint_path).exists():
+                available_rl.append("nfsp")
+            if rnad_checkpoint_path and Path(rnad_checkpoint_path).exists():
+                available_rl.append("rnad")
+            for rl_agent in available_rl:
+                if rl_agent not in agents:
+                    agents.append(rl_agent)
     else:
         if model is None or circle is None:
             raise ValueError("When full_matrix is false, both 'model' and 'circle' must be provided.")
@@ -627,23 +708,60 @@ def run_matrix_pipeline(
     else:
         max_workers = 1
 
+    # Pre-generate walk baseline once if any matchup involves a walk policy
+    need_walk_baseline = any(
+        _policy_kind(row) == "walk" or _policy_kind(col) == "walk"
+        for (_, row, col, _) in work
+    )
+    if need_walk_baseline:
+        _ = _ensure_walk_baseline(
+            base_dir=base_dir,
+            discount=discount,
+            quantities=Q_BGS,
+            v_max=V_MAX_DEFAULT,
+            games=WALK_BASELINE_GAMES,
+            rng_seed=WALK_BASELINE_SEED,
+        )
+
     def _run_pair(item: Tuple[str, str, str, int]) -> Tuple[str, Dict[str, Any]]:
         pair_key, row_agent, col_agent, g = item
-        sim = run_pyspiel_pair_nfsp_with_traces(
-            pair_key=pair_key,
-            agent_row=row_agent,
-            agent_col=col_agent,
-            discount=discount,
-            max_rounds=max_rounds,
-            num_items=num_items,
-            quantities=Q_BGS,
-            games=g,
-            out_dir=base_dir,
-            nfsp_checkpoint_path=nfsp_checkpoint_path,
-            rnad_checkpoint_path=rnad_checkpoint_path,
-            remote_agents=remote_agent_urls,
-            remote_agent_circles=remote_circle_map,
-        )
+        row_policy = _policy_kind(row_agent)
+        col_policy = _policy_kind(col_agent)
+        if row_policy == "walk" or col_policy == "walk":
+            base = _ensure_walk_baseline(
+                base_dir=base_dir,
+                discount=discount,
+                quantities=Q_BGS,
+                v_max=V_MAX_DEFAULT,
+                games=WALK_BASELINE_GAMES,
+                rng_seed=WALK_BASELINE_SEED,
+            )
+            sim = {
+                **base,
+                "pair": pair_key,
+                # Use the same trace file for all walk pairings; counts are total games
+                "trace_file": base["trace_file"],
+                "accept_rate": base["accept_rate"],
+                "ef1_rate": base["ef1_rate"],
+                "row_mean_payoff": base["row_mean_payoff"],
+                "col_mean_payoff": base["col_mean_payoff"],
+            }
+        else:
+            sim = run_pyspiel_pair_nfsp_with_traces(
+                pair_key=pair_key,
+                agent_row=row_agent,
+                agent_col=col_agent,
+                discount=discount,
+                max_rounds=max_rounds,
+                num_items=num_items,
+                quantities=Q_BGS,
+                games=g,
+                out_dir=base_dir,
+                nfsp_checkpoint_path=nfsp_checkpoint_path,
+                rnad_checkpoint_path=rnad_checkpoint_path,
+                remote_agents=remote_agent_urls,
+                remote_agent_circles=remote_circle_map,
+            )
         return pair_key, sim
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
